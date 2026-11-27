@@ -6,6 +6,7 @@ import { createPangenomePhylogenyExperiment, replayAlignedPhylogenyExperiment, t
 import { exportPhylogeny } from './phylogeny-export';
 import { rootAlignedPhylogenyExperiment, replayRootedPhylogenyExperiment, createRootedAncestralExperiment,
   replayRootedAncestralExperiment, type OutgroupRooting } from './phylogeny-rooting';
+import { createRootedTemporalExperiment, replayRootedTemporalExperiment } from './phylogeny-temporal';
 
 // Independent 16-site additive quartet: one private change in B/D, four changes
 // on AB|CD. The two insertion columns have no shared homology declaration.
@@ -132,5 +133,71 @@ describe('pangenome reference-backbone phylogeny', () => {
     await assert.rejects(createPangenomePhylogenyExperiment(original.source, {}, before.signal), { name: 'AbortError' });
     const during = new AbortController(); const pending = createPangenomePhylogenyExperiment(original.source, {}, during.signal); during.abort();
     await assert.rejects(pending, { name: 'AbortError' });
+  });
+});
+
+describe('parent-coordinate phylogeny region exclusions', () => {
+  test('projects supplied parent intervals past reference gaps and exports exact retained source positions', async () => {
+    const rows = [...inserted]; rows[2] = rows[2].slice(0, 14) + 'N' + rows[2].slice(15);
+    const original = await parent(rows);
+    // Parent [3,8) covers backbone positions 3,4,5 AND independent insertion
+    // columns 4,5. Missing parent column14 is separately removed by complete deletion.
+    const experiment = await createPangenomePhylogenyExperiment(original.source,
+      { excludedRegions: [{ start: 3, end: 8 }], bootstrap: 20, seed: 0 });
+    assert.equal(experiment.record.method.version, '4.0.0');
+    assert.equal(experiment.result.usedSites, 12); assert.equal(experiment.result.variableSites, 4);
+    assert.deepEqual(experiment.result.distances, [[0, 1, 2, 3], [1, 0, 3, 4], [2, 3, 0, 1], [3, 4, 1, 0]].map(row => row.map(value => value / 12)));
+    assert.deepEqual(experiment.options.excludedRegions, [{ start: 3, end: 8 }]);
+    assert.deepEqual(experiment.pangenome?.regionExclusions, { excludedRegions: [{ start: 3, end: 8 }],
+      parentColumns: [3, 4, 5, 6, 7], backboneColumns: [3, 4, 5] });
+    assert.deepEqual(experiment.result.columnSelection?.excludedRegions, [{ start: 3, end: 6 }]);
+    assert.deepEqual(experiment.result.excludedColumns, [3, 4, 5, 12]);
+    assert.deepEqual(experiment.pangenome?.retainedAlignmentColumns, [0, 1, 2, 8, 9, 10, 11, 12, 13, 15, 16, 17]);
+    assert.match(exportPhylogeny(experiment, 'distances-tsv'), /# excluded_region_coordinates\tpangenome-parent-alignment; zero-based; end-exclusive/);
+    assert.ok(exportPhylogeny(experiment, 'splits-tsv').includes('# retained_source_columns_json\t[0,1,2,8,9,10,11,12,13,15,16,17]'));
+    assert.equal(exportPhylogeny(experiment, 'pangenome-experiment'), original.content);
+    assert.equal(exportPhylogeny(experiment, 'alignment-fasta'), experiment.source.fasta);
+    assert.deepEqual(await replayAlignedPhylogenyExperiment(serializeAnalysisRecord(experiment.record)), experiment);
+    const forged = structuredClone(experiment.record);
+    forged.parameters.excludedRegions = [{ start: 3, end: 6 }];
+    await assert.rejects(replayAlignedPhylogenyExperiment(await rehash(forged)), /Recomputed pangenome/);
+  });
+  test('retains an insertion-only mask without changing distances, and rejects loss of every backbone site', async () => {
+    const original = await parent();
+    const plain = await createPangenomePhylogenyExperiment(original.source);
+    assert.deepEqual(await createPangenomePhylogenyExperiment(original.source, { excludedRegions: [] }), plain);
+    const insertionOnly = await createPangenomePhylogenyExperiment(original.source, { excludedRegions: [{ start: 4, end: 6 }] });
+    assert.equal(insertionOnly.record.method.version, '4.0.0');
+    assert.deepEqual(insertionOnly.result.distances, expectedDistances);
+    assert.deepEqual(insertionOnly.pangenome?.regionExclusions?.backboneColumns, []);
+    assert.equal(insertionOnly.result.columnSelection, undefined);
+    assert.deepEqual(await replayAlignedPhylogenyExperiment(serializeAnalysisRecord(insertionOnly.record)), insertionOnly);
+    await assert.rejects(createPangenomePhylogenyExperiment(original.source, { excludedRegions: [{ start: 0, end: 4 }, { start: 6, end: 18 }] }), /every source alignment column/);
+    await assert.rejects(createPangenomePhylogenyExperiment(original.source, { excludedRegions: [{ start: 18, end: 19 }] }), /beyond/);
+  });
+  test('carries the full parent mask and backbone-to-parent mapping through rooting and ancestral replay', async () => {
+    const original = await parent([inserted[0], inserted[0], inserted[2], inserted[2]]);
+    const experiment = await createPangenomePhylogenyExperiment(original.source,
+      { distance: 'jc69', excludedRegions: [{ start: 3, end: 8 }] });
+    const rooted = await rootAlignedPhylogenyExperiment(serializeAnalysisRecord(experiment.record), rooting);
+    assert.equal(rooted.record.method.version, '4.0.0');
+    assert.deepEqual(await replayRootedPhylogenyExperiment(serializeAnalysisRecord(rooted.record)), rooted);
+    const ancestral = await createRootedAncestralExperiment(serializeAnalysisRecord(rooted.record), 'Synthetic fixture permission', { endColumn: 16 });
+    assert.deepEqual(ancestral.phylogenyColumns, { source: 'pangenome-parent-alignment', excludedRegions: [{ start: 3, end: 8 }],
+      ancestralColumnToSourceColumn: [0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+      retainedTreeSourceColumns: [0, 1, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17] });
+    assert.equal(ancestral.input.alignment.fasta, experiment.source.fasta);
+    assert.equal(ancestral.phylogenyColumns!.ancestralColumnToSourceColumn[4], 6);
+    assert.deepEqual(await replayRootedAncestralExperiment(serializeAnalysisRecord(ancestral.record)), ancestral);
+    const temporal = await createRootedTemporalExperiment(serializeAnalysisRecord(rooted.record), {
+      name: 'Synthetic dates with a masked parent tree', kind: 'demo', description: 'Independent fixture dates',
+      reference: null, license: 'Synthetic test permission', dateIndependent: true,
+      sampleTable: 'sampleId,collectionDate,dateSource\nA,2000.0,synthetic\nB,2001.0,synthetic\nC,2002.0,synthetic\nD,2003.0,synthetic\n',
+    }, { permutations: 24, seed: 0 });
+    assert.deepEqual(temporal.record.inputs[1].data, JSON.parse(serializeAnalysisRecord(rooted.record)));
+    assert.deepEqual(await replayRootedTemporalExperiment(serializeAnalysisRecord(temporal.record)), temporal);
+    const lineage = structuredClone(ancestral.record);
+    (lineage.fields.lineage.value as { phylogenyColumns: { retainedTreeSourceColumns: number[] } }).phylogenyColumns.retainedTreeSourceColumns.push(6);
+    await assert.rejects(replayRootedAncestralExperiment(await rehash(lineage)), /Fresh linked ancestral/);
   });
 });

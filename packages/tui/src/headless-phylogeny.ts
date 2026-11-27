@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { Worker } from 'node:worker_threads';
 import { PHYLOGENY_LIMITS, createAlignedPhylogenyExperiment, createPangenomePhylogenyExperiment, parseAlignedDNA,
-  replayAlignedPhylogenyExperiment, resolvePhylogenyOptions, type AlignedPhylogenyExperiment,
+  replayAlignedPhylogenyExperiment, parsePhylogenyExcludedRegions, resolvePhylogenyOptions, type AlignedPhylogenyExperiment,
   type PangenomePhylogenySource, type PhylogenyOptions, type PhylogenySource } from '../../core/src/analysis/aligned-phylogeny';
 import { exportPhylogeny, PHYLOGENY_EXPORT_FORMATS, type PhylogenyExportFormat } from '../../core/src/analysis/phylogeny-export';
 import { ROOTED_PHYLOGENY_METHOD, ROOTED_ANCESTRAL_METHOD, rootAlignedPhylogenyExperiment, replayRootedPhylogenyExperiment,
@@ -22,12 +22,12 @@ bun run phylogeny inspect --input aligned.fa
 bun run phylogeny infer --input aligned.fa --alignment provided
   --name NAME --reference ALIGNMENT_PROVENANCE --output NEW_EXPERIMENT.json
   [--source local|demo] [--distance p-distance|jc69|k80] [--bootstrap 0|20..200]
-  [--seed 1] [--timeout-ms 300000]
+  [--seed 1] [--exclude-regions 0:10,25:30] [--timeout-ms 300000]
 bun run phylogeny infer-pangenome --experiment pangenome.json
   --column-policy reference-backbone-complete --name NAME
   --reference HOMOLOGY_PROVENANCE --output NEW_EXPERIMENT.json
   [--distance p-distance|jc69|k80] [--bootstrap 0|20..200] [--seed 1]
-  [--timeout-ms 300000]
+  [--exclude-regions 0:10,25:30] [--timeout-ms 300000]
 bun run phylogeny root --experiment unrooted.json --rooting decision.json
   --output NEW_ROOTED_EXPERIMENT.json [--timeout-ms 300000]
 bun run phylogeny ancestral --experiment rooted.json --license ALIGNMENT_LICENSE
@@ -66,6 +66,16 @@ the biological basis for the homology assumption; replay does not establish it.
 Local/demo provenance is inherited from the parent. Original parent JSON bytes
 are retained in the new experiment and every linked rooted record. Bootstrap
 conditions on the chosen reference/alignment and does not estimate their uncertainty.
+
+--exclude-regions records supplied zero-based, half-open start:end intervals
+(e.g. 0:10,25:30); at most 256 intervals, with overlapping/adjacent intervals
+merged. infer coordinates name the original aligned FASTA. infer-pangenome
+coordinates name the FULL reconstructed parent alignment, BEFORE reference-
+backbone projection. Exclusions apply to all distances and bootstrap draws.
+Out-of-range intervals and removal of every usable column fail; nothing is clipped.
+This is a supplied selection, not recombination detection or correction. Exact
+original-column mappings remain in JSON and distance/split TSV metadata. Original
+FASTA exports retain excluded columns; ancestral window/gap policy is separate.
 
 infer creates an unrooted neighbor-joining tree. root requires an explicit JSON
 decision with exactly: outgroup (array of sample IDs), fractionFromOutgroup
@@ -187,8 +197,8 @@ export function parsePhylogenyCommand(args: readonly string[]): PhylogenyCommand
   const [type, ...rest] = args;
   if (!['inspect', 'infer', 'infer-pangenome', 'root', 'ancestral', 'temporal', 'date', 'verify', 'export'].includes(type)) throw new Error('Choose inspect, infer, infer-pangenome, root, ancestral, temporal, date, verify or export. Use --help for usage.');
   const allowed = type === 'inspect' ? ['--input', '--timeout-ms'] : type === 'infer'
-    ? ['--input', '--alignment', '--name', '--reference', '--source', '--distance', '--bootstrap', '--seed', '--output', '--timeout-ms']
-    : type === 'infer-pangenome' ? ['--experiment', '--column-policy', '--name', '--reference', '--distance', '--bootstrap', '--seed', '--output', '--timeout-ms']
+    ? ['--input', '--alignment', '--name', '--reference', '--source', '--distance', '--bootstrap', '--seed', '--exclude-regions', '--output', '--timeout-ms']
+    : type === 'infer-pangenome' ? ['--experiment', '--column-policy', '--name', '--reference', '--distance', '--bootstrap', '--seed', '--exclude-regions', '--output', '--timeout-ms']
     : type === 'root' ? ['--experiment', '--rooting', '--output', '--timeout-ms']
     : type === 'ancestral' ? ['--experiment', '--license', '--options', '--output', '--timeout-ms']
     : type === 'temporal' ? ['--experiment', '--metadata', '--samples', '--options', '--output', '--timeout-ms']
@@ -230,7 +240,8 @@ export function parsePhylogenyCommand(args: readonly string[]): PhylogenyCommand
   }
   const distance = flags.get('--distance') ?? 'p-distance';
   if (distance !== 'p-distance' && distance !== 'jc69' && distance !== 'k80') throw new Error('--distance must be p-distance, jc69 or k80.');
-  const options = resolvePhylogenyOptions({ distance, bootstrap: integer('--bootstrap', 0), seed: integer('--seed', 1) });
+  const options = resolvePhylogenyOptions({ distance, bootstrap: integer('--bootstrap', 0), seed: integer('--seed', 1),
+    excludedRegions: parsePhylogenyExcludedRegions(flags.get('--exclude-regions') ?? '') });
   if (type === 'infer-pangenome') {
     if (required('--column-policy') !== 'reference-backbone-complete') throw new Error('--column-policy must be reference-backbone-complete; insertion homology is not inferred.');
     return { type, experimentPath: required('--experiment'), outputPath: required('--output'), timeoutMs,

@@ -393,3 +393,45 @@ describe('recorded real pangenome and CDS commands', () => {
     assert.throws(() => validateResearchPangenome({ contentIds: [], options: {}, annotation: null }), /2–24/);
   });
 });
+
+describe('recorded source-column exclusion policy', () => {
+  it('retains a canonical mask in captured commands, native replay, and complete evidence', async () => {
+    const f = await phylogenyFixture();
+    const parameters = researchPhylogenyParameters(f.pangenome, f.parameters.name, f.parameters.reference,
+      { bootstrap: 20, seed: 17, excludedRegions: [{ start: 6, end: 8 }, { start: 5, end: 6 }] });
+    assert.deepEqual(parameters.options.excludedRegions, [{ start: 5, end: 8 }]);
+    await f.workflow.commands.dispatch(ActionIds.OverlayPhylodynamics, analysisJson(parameters));
+    const record = f.workflow.getSnapshot().lastAnalysis!;
+    assert.equal(record.method.version, '4.0.0');
+    const tree = await replayAlignedPhylogenyExperiment(serializeAnalysisRecord(record));
+    assert.equal(tree.result.usedSites, f.loaded[0].sequence.length - 3);
+    assert.deepEqual(tree.pangenome?.regionExclusions?.parentColumns, [5, 6, 7]);
+    const indexes = f.contentIds.map(id => tree.result.taxa.indexOf(`local-${id}`));
+    assert.equal(tree.result.distances[indexes[0]][indexes[1]], 0);
+    assert.equal(tree.result.distances[indexes[0]][indexes[2]], 1 / tree.result.usedSites);
+    f.workflow.commands.stop();
+    const content = f.workflow.commands.export();
+    const native = await runTerminalResearchWorker({ type: 'replay', content, repetitions: 1,
+      exportAnalysis: false, captureResults: true }, new AbortController().signal);
+    assert.equal(native.type, 'replayed');
+    if (native.type !== 'replayed') throw new Error('Expected native replay');
+    assert.equal(native.analysisJson, null);
+    assert.deepEqual(workflowAnalysisAt(await parseWorkflowResults(native.allResultsJson!), 1), record);
+    const captured = parseCommandTape(content);
+    (captured.commands[0].parameters as unknown as ResearchPhylogenyParameters).options.excludedRegions = [{ start: 6, end: 8 }];
+    f.workflow.load(serializeCommandTape(captured));
+    await assert.rejects(f.workflow.commands.replay(), /differs/);
+  }, 30000);
+  it('does not allow a producer to mutate nested region settings to relabel different evidence', async () => {
+    const f = await phylogenyFixture(), produce = f.environment.phylogeny!;
+    const parameters = researchPhylogenyParameters(f.pangenome, f.parameters.name, f.parameters.reference,
+      { excludedRegions: [{ start: 5, end: 8 }] });
+    f.environment.phylogeny = (source, options, signal) => {
+      options.excludedRegions![0].start = 6;
+      return produce(source, options, signal);
+    };
+    await assert.rejects(f.workflow.commands.dispatch(ActionIds.OverlayPhylodynamics, analysisJson(parameters)), /does not match/);
+    assert.deepEqual(parameters.options.excludedRegions, [{ start: 5, end: 8 }]);
+    assert.equal(f.workflow.getSnapshot().lastAnalysis, null);
+  });
+});

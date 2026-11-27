@@ -4,7 +4,7 @@ import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { serializeAnalysisRecord, type AnalysisRecord } from '../packages/core/src/analysis-result';
-import { PHYLOGENY_LIMITS, parseAlignedDNA, resolvePhylogenyOptions, createAlignedPhylogenyExperiment,
+import { PHYLOGENY_LIMITS, parseAlignedDNA, parsePhylogenyExcludedRegions, resolvePhylogenyOptions, createAlignedPhylogenyExperiment,
   replayAlignedPhylogenyExperiment, type PhylogenyOptions, type AlignedPhylogenyExperiment } from '../packages/core/src/analysis/aligned-phylogeny';
 import { ROOTED_PHYLOGENY_METHOD, ROOTED_ANCESTRAL_METHOD, resolveOutgroupRooting, rootAlignedPhylogenyExperiment,
   replayRootedPhylogenyExperiment, type OutgroupRooting, type RootedPhylogenyExperiment } from '../packages/core/src/analysis/phylogeny-rooting';
@@ -19,9 +19,11 @@ export const PHYLOGENY_HELP = `Aligned DNA neighbor joining (offline, unrooted)
 bun scripts/phylogeny.ts inspect --alignment aligned.fasta
 bun scripts/phylogeny.ts infer --alignment aligned.fasta --source CITATION --output experiment.json
   [--name NAME] [--distance p-distance|jc69|k80] [--bootstrap 0|20..200] [--seed UINT32] [--demo]
+  [--exclude-regions 0:10,25:30]
 bun scripts/phylogeny.ts infer-pangenome --experiment pangenome.json
   --column-policy reference-backbone-complete --source HOMOLOGY_PROVENANCE --output experiment.json
   [--name NAME] [--distance p-distance|jc69|k80] [--bootstrap 0|20..200] [--seed UINT32] [--timeout-ms 300000]
+  [--exclude-regions 0:10,25:30]
 bun scripts/phylogeny.ts root --experiment experiment.json --outgroup A,B --fraction 0.25
   --rooting-evidence 'Outgroup and branch-placement rationale' --date-independent --output rooted.json
 bun scripts/phylogeny.ts ancestral --experiment rooted.json --license ALIGNMENT_LICENSE
@@ -43,6 +45,13 @@ from every pair. All retained columns, including invariant ones, are resampled.
 Inference defaults: observed p-distance, complete deletion, bootstrap 0, seed 1.
 JC69 and K80 reject saturated distances; any saturated bootstrap withholds all support.
 K80 distinguishes transitions from transversions under equal equilibrium base frequencies.
+
+--exclude-regions supplies zero-based, half-open start:end ranges. Coordinates name
+the original aligned FASTA for infer, or the full reconstructed parent alignment
+before reference-backbone projection for infer-pangenome. Every distance and
+bootstrap draw uses the same retained columns. Out-of-range or wholly excluded
+alignments fail. This records a supplied selection, not recombination correction.
+Original FASTA exports keep excluded columns; ancestral window/gap policy is separate.
 
 infer-pangenome reconstructs the exact saved parent sequences and alignment in a
 terminable worker. The explicit reference-backbone-complete policy excludes
@@ -112,8 +121,8 @@ export function parsePhylogenyCommand(args: readonly string[]): PhylogenyCommand
   if (args.length === 1 && ['help', '--help', '-h'].includes(args[0])) return { type: 'help' };
   const [type, ...rest] = args;
   if (!['inspect', 'infer', 'infer-pangenome', 'root', 'ancestral', 'temporal', 'date', 'replay', 'export'].includes(type)) throw new Error('Choose inspect, infer, infer-pangenome, root, ancestral, temporal, date, replay or export; use --help for usage.');
-  const allowed = type === 'infer' ? ['--alignment', '--output', '--source', '--name', '--distance', '--bootstrap', '--seed', '--demo']
-    : type === 'infer-pangenome' ? ['--experiment', '--column-policy', '--output', '--source', '--name', '--distance', '--bootstrap', '--seed', '--timeout-ms']
+  const allowed = type === 'infer' ? ['--alignment', '--output', '--source', '--name', '--distance', '--bootstrap', '--seed', '--demo', '--exclude-regions']
+    : type === 'infer-pangenome' ? ['--experiment', '--column-policy', '--output', '--source', '--name', '--distance', '--bootstrap', '--seed', '--timeout-ms', '--exclude-regions']
     : type === 'root' ? ['--experiment', '--output', '--outgroup', '--fraction', '--rooting-evidence', '--date-independent']
     : type === 'ancestral' ? ['--experiment', '--output', '--license', '--options', '--timeout-ms']
     : type === 'temporal' ? ['--experiment', '--dates', '--output', '--name', '--source', '--reference', '--license', '--date-independent', '--demo-dates', '--permutations', '--seed', '--scheme', '--exclude']
@@ -194,7 +203,8 @@ export function parsePhylogenyCommand(args: readonly string[]): PhylogenyCommand
     return Number(value);
   };
   const options = resolvePhylogenyOptions({ distance: (values.get('--distance') ?? 'p-distance') as PhylogenyOptions['distance'],
-    deletion: 'complete', bootstrap: number('--bootstrap', 0), seed: number('--seed', 1) });
+    deletion: 'complete', bootstrap: number('--bootstrap', 0), seed: number('--seed', 1),
+    excludedRegions: parsePhylogenyExcludedRegions(values.get('--exclude-regions') ?? '') });
   if (type === 'infer-pangenome') {
     if (required('--column-policy') !== 'reference-backbone-complete') throw new Error('--column-policy must be reference-backbone-complete; independent insertion homology is not inferred.');
     const timeoutMs = number('--timeout-ms', 300000);
@@ -277,7 +287,8 @@ export async function executePhylogenyCommand(command: Exclude<PhylogenyCommand,
     const result = await runPhylogenyCommand(['infer-pangenome', '--experiment', command.experiment,
       '--column-policy', 'reference-backbone-complete', '--name', command.name ?? basename(command.experiment),
       '--reference', command.source, '--distance', command.options.distance, '--bootstrap', String(command.options.bootstrap),
-      '--seed', String(command.options.seed), '--output', command.output, '--timeout-ms', String(command.timeoutMs)]);
+      '--seed', String(command.options.seed), '--output', command.output, '--timeout-ms', String(command.timeoutMs),
+      ...(command.options.excludedRegions ? ['--exclude-regions', command.options.excludedRegions.map(region => `${region.start}:${region.end}`).join(',')] : [])]);
     if (typeof result === 'string') throw new Error('Pangenome phylogeny worker returned no result summary.');
     return { ...result, verified: false };
   }
@@ -311,7 +322,7 @@ export async function executePhylogenyCommand(command: Exclude<PhylogenyCommand,
   const method = selected && typeof selected === 'object' && 'method' in selected ? selected.method : null;
   if (method && typeof method === 'object' && 'id' in method && method.id === ROOTED_ANCESTRAL_METHOD.id
     || command.type === 'export' && (command.format === 'ancestral-fasta' || command.format === 'alignment-fasta' || command.format === 'pangenome-experiment')
-    || method && typeof method === 'object' && 'id' in method && 'version' in method && method.version === '2.0.0'
+    || method && typeof method === 'object' && 'id' in method && 'version' in method && ['2.0.0', '3.0.0', '4.0.0'].includes(String(method.version))
       && (method.id === 'aligned-dna-neighbor-joining' || method.id === ROOTED_PHYLOGENY_METHOD.id)) {
     const { executePhylogenyTask } = await import('../packages/tui/src/headless-phylogeny');
     const result = await executePhylogenyTask(command.type === 'replay' ? { type: 'verify', content: savedContent }

@@ -1305,6 +1305,42 @@ explicit actions in their panel; actions in other panels are not recorded.
 Broader overlay coverage, TUI evidence display and complete action replay remain
 open work.
 
+### Exclude alignment regions from phylogeny
+
+Phylogeny inference accepts explicit regions to exclude from every pairwise
+distance and bootstrap draw. Enter `0:10,25:30` in **Exclude alignment regions
+(optional)**, or the corresponding control in the recorded research workflow.
+Ranges are zero-based and half-open: `0:10` removes columns 0 through 9.
+
+For already aligned FASTA, positions name the original supplied alignment. For
+a saved pangenome, they name the **full reconstructed parent alignment before
+reference-backbone projection**. The record retains both parent and backbone
+mappings, including exclusions that affect only reference-gap columns.
+
+From a source checkout:
+
+```bash
+bun run phylogeny infer --input aligned.fa --alignment provided \
+  --name "Selected alignment regions" --reference "My alignment and mask rationale" \
+  --distance p-distance --bootstrap 20 --seed 1 \
+  --exclude-regions 0:10,25:30 --output masked-phylogeny.json
+bun run phylogeny verify --experiment masked-phylogeny.json
+bun run phylogeny export --experiment masked-phylogeny.json \
+  --format distances-tsv --output masked-distances.tsv
+```
+
+The same flag applies to `infer-pangenome`. Overlapping or adjacent intervals
+are merged; at most 256 supplied intervals are accepted. Out-of-range regions
+and removal of every usable column fail explicitly. Distance and split TSV
+exports retain exact interval and original-column metadata.
+
+Rooted, ancestral and temporal replay retain the parent tree's selection.
+Ancestral reconstruction still applies its own window and gap policy to the
+original alignment; a tree mask does not silently remove ancestral sites.
+Unmasked experiments retain their existing identities. Region selection is a
+user-supplied hypothesis; automatic recombination detection, mask selection
+and selection-uncertainty estimation are not implemented.
+
 ### Analyze local protein coordinates
 
 The **Host Interactions → Protein alignment and structural evidence** workbench

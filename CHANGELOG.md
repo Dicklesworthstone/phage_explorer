@@ -6,6 +6,21 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Explicit alignment-region exclusions through phylogeny workflows
+
+- Exclude supplied zero-based, half-open alignment intervals before distances
+  and bootstrap resampling. Raw FASTA coordinates name the original alignment;
+  pangenome coordinates name the full reconstructed parent before backbone
+  projection. Canonical intervals and exact retained source columns are saved.
+- Browser inference, captured research workflows, native commands and the
+  earlier script entry point accept the same selection. Verified exports,
+  rooting, ancestry and temporal lineage retain the complete parent evidence.
+- Empty/omitted masks preserve existing identities. Invalid, out-of-range and
+  wholly unusable selections fail; replay recomputes and rejects altered masks.
+  Ancestral windows remain separate. This does not automatically identify or
+  correct recombination.
+  [Controls, coordinate conventions and commands](README.md#exclude-alignment-regions-from-phylogeny).
+
 ### Standalone local mmCIF protein geometry
 
 - Prepare ordinary mmCIF and single-protein FASTA inputs with explicit chain,
@@ -19,6 +34,7 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   metadata. The complete deposited-reference contract retains its requirements.
   Geometry does not establish binding, model accuracy or host range.
   [Input profile, commands and limits](data/protein-references/README.md#analyze-your-own-mmcif-coordinates).
+  [Implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/d91c0d5af531e60c698ad96900f6268ab6dcff47).
 
 ### Parsimonious flux selection for sourced host models
 

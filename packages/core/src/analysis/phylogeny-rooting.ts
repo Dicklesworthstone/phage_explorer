@@ -1,6 +1,7 @@
 /** Explicit root hypotheses on a verified NJ tree, without estimating a biological root. */
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 import { createAlignedPhylogenyExperiment, replayAlignedPhylogenyExperiment, parseAlignedDNA, PHYLOGENY_LIMITS,
+  resolvePhylogenyOptions, type PhylogenyExcludedRegion,
   type AlignedPhylogenyExperiment, type NeighborJoiningTree, type PhylogenyOptions, type PhylogenySource } from './aligned-phylogeny';
 import { createAncestralRecord, parseAncestralFasta, reconstructAncestors, resolveAncestralOptions, validateAncestralDataset,
   type AncestralDataset, type AncestralOptions, type AncestralResult } from './ancestral-reconstruction';
@@ -112,14 +113,19 @@ function placeRoot(unrooted: AlignedPhylogenyExperiment, rooting: OutgroupRootin
       'Original alignment, complete-deletion, distance-model and sampling assumptions still apply. p-distance branch units remain observed differences, not calibrated time.',
       'Bootstrap support belongs to the original unrooted splits and supplies no root-placement support. Zero-length resolutions remain unresolved.',
       'Rooting does not validate a clock, infer dates, estimate populations or establish biological ancestry. Downstream inferences are conditional on the supplied root.',
+      ...(unrooted.options.excludedRegions ? ['The exact user-supplied alignment-region exclusions remain part of the parent tree. Root placement does not restore excluded observations or validate the selection rationale.'] : []),
       ...(unrooted.pangenome ? ['The original pangenome is retained and freshly reconstructed on replay. Only its reference backbone is projected into phylogeny; independent insertion columns are excluded before complete deletion. Reference/alignment uncertainty and biological homology are not established by this root.'] : []),
     ] };
 }
 async function bindRoot(unrooted: AlignedPhylogenyExperiment, rooting: OutgroupRooting, signal?: AbortSignal): Promise<RootedPhylogenyExperiment> {
   active(signal);
   const result = placeRoot(unrooted, rooting);
-  const record = await createAnalysisRecord({ method: unrooted.pangenome ? { ...ROOTED_PHYLOGENY_METHOD, version: '2.0.0',
-      implementation: 'typescript; explicit root retaining the complete pangenome-derived inference chain' } : ROOTED_PHYLOGENY_METHOD,
+  const masked = !!unrooted.options.excludedRegions?.length;
+  const method = masked ? { ...ROOTED_PHYLOGENY_METHOD, version: unrooted.pangenome ? '4.0.0' : '3.0.0',
+    implementation: 'typescript; explicit root retaining the original source-alignment region exclusions and complete inference chain' }
+    : unrooted.pangenome ? { ...ROOTED_PHYLOGENY_METHOD, version: '2.0.0',
+      implementation: 'typescript; explicit root retaining the complete pangenome-derived inference chain' } : ROOTED_PHYLOGENY_METHOD;
+  const record = await createAnalysisRecord({ method,
     inputs: unrooted.pangenome ? [{ id: 'unrootedPhylogeny', accession: null, source: unrooted.source.kind,
       description: 'Complete verified pangenome-derived inference and original parent experiment', data: analysisJson(unrooted.record) }]
       : unrooted.record.inputs.map(({ sha256: _sha, ...input }) => input),
@@ -139,14 +145,19 @@ export async function rootAlignedPhylogenyExperiment(content: string, supplied: 
 export async function replayRootedPhylogenyExperiment(content: string, signal?: AbortSignal): Promise<RootedPhylogenyExperiment> {
   active(signal);
   const saved = await parseAnalysisRecord(content, { methodId: ROOTED_PHYLOGENY_METHOD.id });
-  const linked = saved.method.version === '2.0.0';
-  if (!linked && saved.method.version !== ROOTED_PHYLOGENY_METHOD.version) throw new Error('Analysis method/version is incompatible.');
+  const linked = saved.method.version === '2.0.0' || saved.method.version === '4.0.0';
+  const masked = saved.method.version === '3.0.0' || saved.method.version === '4.0.0';
+  if (!['1.0.0', '2.0.0', '3.0.0', '4.0.0'].includes(saved.method.version)) throw new Error('Analysis method/version is incompatible.');
   if (saved.inputs.length !== 1 || saved.inputs[0].id !== (linked ? 'unrootedPhylogeny' : 'alignment') || Object.keys(saved.parameters).sort().join('|') !== 'phylogeny|rooting') {
     throw new Error('Rooted replay requires the original alignment, phylogeny settings and explicit rooting decision.');
   }
   const options = saved.parameters.phylogeny;
-  if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).sort().join('|') !== 'bootstrap|deletion|distance|seed') {
+  if (!options || typeof options !== 'object' || Array.isArray(options)
+    || Object.keys(options).sort().join('|') !== ['bootstrap', 'deletion', 'distance', 'seed', ...(masked ? ['excludedRegions'] : [])].sort().join('|')) {
     throw new Error('Rooted replay requires every original phylogeny option.');
+  }
+  if (masked && !resolvePhylogenyOptions(options as unknown as PhylogenyOptions).excludedRegions?.length) {
+    throw new Error('Masked rooted replay requires the original nonempty region exclusions.');
   }
   const rooting = resolveOutgroupRooting(saved.parameters.rooting as unknown as OutgroupRooting);
   const unrooted = linked
@@ -167,6 +178,9 @@ export interface PreparedRootedAncestral {
   rootedSource: RootedAncestralSource;
   rootedResultId: string;
   unrootedResultId: string;
+  /** Parent distance selection, not an implicit ancestral-site filter. Ancestral sites remain 1-based. */
+  phylogenyColumns?: { source: 'original-alignment' | 'pangenome-parent-alignment'; excludedRegions: PhylogenyExcludedRegion[];
+    ancestralColumnToSourceColumn: number[]; retainedTreeSourceColumns: number[] };
 }
 export interface RootedAncestralExperiment extends PreparedRootedAncestral {
   result: AncestralResult;
@@ -209,8 +223,17 @@ export async function prepareRootedAncestralDataset(content: string, license: st
         ? 'Reference-backbone columns from a freshly reconstructed pangenome; independent reference-gap insertions excluded. Includes backbone sites omitted by distance complete deletion. Original parent inputs and column mapping are retained in the inference chain; homology is user-supplied.'
         : 'Original user-supplied homologous columns; normalized FASTA IDs, case, row order and line formatting. No realignment, taxon removal or site deletion.',
       reference: singleLine(source.reference) } });
+  const regions = options.excludedRegions;
+  const phylogenyColumns: PreparedRootedAncestral['phylogenyColumns'] = regions ? {
+    source: rooted.unrooted.pangenome ? 'pangenome-parent-alignment' : 'original-alignment',
+    excludedRegions: structuredClone(regions),
+    ancestralColumnToSourceColumn: rooted.unrooted.pangenome ? [...rooted.unrooted.pangenome.backboneColumns]
+      : Array.from({ length: rooted.unrooted.result.alignmentSites }, (_, column) => column),
+    retainedTreeSourceColumns: rooted.unrooted.pangenome ? [...rooted.unrooted.pangenome.retainedAlignmentColumns]
+      : [...rooted.unrooted.result.columnSelection!.retainedColumns],
+  } : undefined;
   active(signal);
-  return { input, rootedResultId, unrootedResultId,
+  return { input, rootedResultId, unrootedResultId, ...(phylogenyColumns ? { phylogenyColumns } : {}),
     rootedSource: { content: serializeAnalysisRecord(rooted.record), license: license.trim() } };
 }
 
@@ -232,6 +255,7 @@ export async function createRootedAncestralExperiment(content: string, license: 
   result.warnings.push(
     'The original alignment, neighbor-joining settings and explicit root are retained and recomputed on replay. Reproducibility does not establish homology or root accuracy.',
     'Reconstruction uses the original alignment columns, including columns excluded from distance inference. Its recorded gap/window policy applies separately.',
+    ...(prepared.phylogenyColumns ? ['The parent tree region mask is preserved in lineage with original source-column mappings. It does not automatically remove ancestral sites: ancestral column n maps to ancestralColumnToSourceColumn[n-1], and the explicit reconstruction window/gap policy remains separate.'] : []),
     'The ancestral substitution model is a separate recorded assumption; the tree distance model does not supply ancestral model parameters. No dating fit or calendar-year branches are reused.',
     ...parent.fields.rooting.limitations,
   );
@@ -245,7 +269,8 @@ export async function createRootedAncestralExperiment(content: string, license: 
     parameters: reconstruction.parameters, seed: parent.seed,
     references: [...parent.references, ...reconstruction.references],
     fields: { ...reconstruction.fields, lineage: { kind: 'sequence-score', label: 'Verified parent identities', units: 'records',
-      value: analysisJson({ rootedResultId: prepared.rootedResultId, unrootedResultId: prepared.unrootedResultId }),
+      value: analysisJson({ rootedResultId: prepared.rootedResultId, unrootedResultId: prepared.unrootedResultId,
+        ...(prepared.phylogenyColumns ? { phylogenyColumns: prepared.phylogenyColumns } : {}) }),
       coverage: { available: 2, total: 2, unit: 'records' },
       limitations: ['Parent verification establishes a reproducible computation, not biological homology, root truth or empirical confidence.'] } } });
   active(signal);

@@ -24,7 +24,7 @@ import { SPACER_METHOD, SPACER_LIMITS, parseSpacerLibrary, validateSpacerLibrary
 import { RESTRICTION_ENZYMES } from '../../../../core/src/data/restriction-enzymes';
 import { parseCdsGeneIds } from '../../../../core/src/analysis/cds-consequences';
 import type { AlignmentGraphOptions } from '../../../../core/src/analysis/alignment-pangenome';
-import { PANGENOME_PHYLOGENY_METHOD, type PhylogenyOptions, type AlignedPhylogenyResult,
+import { PANGENOME_PHYLOGENY_METHOD, MASKED_PANGENOME_PHYLOGENY_METHOD, parsePhylogenyExcludedRegions, type PhylogenyOptions, type AlignedPhylogenyResult,
   type PangenomePhylogenyOrigin, type PangenomePhylogenySource } from '../../../../core/src/analysis/aligned-phylogeny';
 import { runPangenomeWorker } from '../../workers/PangenomeSession';
 import { interruptsResearchNavigation, type ResearchNavigationTarget } from '../../keyboard/ResearchNavigation';
@@ -390,6 +390,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const [treeName, setTreeName] = useState('Captured reference-backbone phylogeny'), [treeReference, setTreeReference] = useState('');
   const [treeDistance, setTreeDistance] = useState<PhylogenyOptions['distance']>('p-distance');
   const [treeBootstrap, setTreeBootstrap] = useState('0'), [treeSeed, setTreeSeed] = useState('1');
+  const [treeExcludedRegions, setTreeExcludedRegions] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [inputBusy, setInputBusy] = useState(false);
   const [libraryBusy, setLibraryBusy] = useState(false);
@@ -422,12 +423,13 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       if (!graphDraft.parameters) throw new Error(graphDraft.error ?? 'Choose the parent pangenome inputs and settings.');
       if (!treeBootstrap.trim() || !treeSeed.trim()) throw new Error('Enter the bootstrap count and seed explicitly.');
       const parameters = researchPhylogenyParameters(graphDraft.parameters, treeName, treeReference,
-        { distance: treeDistance, deletion: 'complete', bootstrap: Number(treeBootstrap), seed: Number(treeSeed) });
+        { distance: treeDistance, deletion: 'complete', bootstrap: Number(treeBootstrap), seed: Number(treeSeed),
+          excludedRegions: parsePhylogenyExcludedRegions(treeExcludedRegions) });
       return { parameters, error: null };
     } catch (cause) { return { parameters: null, error: cause instanceof Error ? cause.message : String(cause) }; }
-  }, [graphDraft, treeName, treeReference, treeDistance, treeBootstrap, treeSeed]);
+  }, [graphDraft, treeName, treeReference, treeDistance, treeBootstrap, treeSeed, treeExcludedRegions]);
   const treeResult = acceptedAnalysis?.method.id === PANGENOME_PHYLOGENY_METHOD.id
-    && acceptedAnalysis.method.version === PANGENOME_PHYLOGENY_METHOD.version
+    && ([PANGENOME_PHYLOGENY_METHOD.version, MASKED_PANGENOME_PHYLOGENY_METHOD.version] as string[]).includes(acceptedAnalysis.method.version)
     ? { record: acceptedAnalysis, result: acceptedAnalysis.fields.phylogeny.value as unknown as AlignedPhylogenyResult,
       origin: acceptedAnalysis.fields.pangenome.value as unknown as Omit<PangenomePhylogenyOrigin, 'source'>,
       source: acceptedAnalysis.inputs[0].data as unknown as PangenomePhylogenySource } : null;
@@ -1025,6 +1027,11 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
         </select></label>
         <label>Workflow site-bootstrap replicates (0 or 20–200) <input type="number" min={0} max={200} value={treeBootstrap} onChange={event => setTreeBootstrap(event.target.value)} /></label>
         <label>Workflow bootstrap seed <input type="number" min={0} max={4294967295} value={treeSeed} onChange={event => setTreeSeed(event.target.value)} /></label>
+        <label>Workflow excluded alignment regions (optional) <input maxLength={10000} value={treeExcludedRegions}
+          onChange={event => setTreeExcludedRegions(event.target.value)} placeholder="0:10,25:30" /></label>
+        <p>Use zero-based, half-open start:end ranges in the full reconstructed parent alignment, before reference-backbone projection.
+          Exclusions remove those columns from every distance and bootstrap sample. Blank uses all eligible columns.
+          Original coordinates and the supplied regions are retained in the command and every replay; no automatic recombination correction is claimed.</p>
         <p>Homology is an explicit user assessment. This unrooted tree and conditional site-bootstrap support do not establish ancestry, a donor or transfer direction. Reference backbones are limited to 100,000 bases; all existing inference work limits apply.</p>
         {treeDraft.error && <p>{treeDraft.error}</p>}
         <button type="button" disabled={busy || !active || !treeDraft.parameters} onClick={() => {

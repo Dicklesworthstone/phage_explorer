@@ -12,10 +12,25 @@ import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisR
 export const ALIGNED_PHYLOGENY_METHOD = { id: 'aligned-dna-neighbor-joining', version: '1.0.0', implementation: 'typescript' } as const;
 export const PANGENOME_PHYLOGENY_METHOD = { id: ALIGNED_PHYLOGENY_METHOD.id, version: '2.0.0',
   implementation: 'typescript; freshly reconstructed pangenome reference backbone followed by complete deletion and neighbor joining' } as const;
-export const PHYLOGENY_LIMITS = { bytes: 2 * 1024 * 1024, taxa: 64, sites: 100000, bootstrap: 200, work: 100000000 } as const;
+export const MASKED_ALIGNED_PHYLOGENY_METHOD = { id: ALIGNED_PHYLOGENY_METHOD.id, version: '3.0.0',
+  implementation: 'typescript; explicit source-alignment region exclusions before complete deletion and neighbor joining' } as const;
+export const MASKED_PANGENOME_PHYLOGENY_METHOD = { id: ALIGNED_PHYLOGENY_METHOD.id, version: '4.0.0',
+  implementation: 'typescript; freshly reconstructed pangenome; source-alignment region exclusions projected onto its reference backbone before complete deletion and neighbor joining' } as const;
+export const PHYLOGENY_LIMITS = { bytes: 2 * 1024 * 1024, taxa: 64, sites: 100000, bootstrap: 200, work: 100000000, excludedRegions: 256 } as const;
 export interface AlignedTaxon { id: string; sequence: string }
 export interface PhylogenySource { name: string; fasta: string; kind: 'local' | 'demo'; reference: string }
-export interface PhylogenyOptions { distance: 'p-distance' | 'jc69' | 'k80'; deletion: 'complete'; bootstrap: number; seed: number }
+/** Zero-based, half-open columns in the original MSA or reconstructed parent pangenome alignment. */
+export interface PhylogenyExcludedRegion { start: number; end: number }
+export interface PhylogenyOptions {
+  distance: 'p-distance' | 'jc69' | 'k80'; deletion: 'complete'; bootstrap: number; seed: number;
+  /** Omitted/empty preserves the original unmasked contract. Coordinates precede pangenome projection. */
+  excludedRegions?: PhylogenyExcludedRegion[];
+}
+export function phylogenyMethod(options: PhylogenyOptions, pangenome = false) {
+  return options.excludedRegions?.length
+    ? pangenome ? MASKED_PANGENOME_PHYLOGENY_METHOD : MASKED_ALIGNED_PHYLOGENY_METHOD
+    : pangenome ? PANGENOME_PHYLOGENY_METHOD : ALIGNED_PHYLOGENY_METHOD;
+}
 export interface PhylogenyNode { id: number; label: string | null }
 export interface PhylogenyEdge { a: number; b: number; length: number }
 /** Flat storage keeps long, unbalanced trees within the shared JSON depth bound. */
@@ -26,6 +41,8 @@ export interface K80PairComparison {
 }
 export interface AlignedPhylogenyResult {
   taxa: string[]; alignmentSites: number; usedSites: number; excludedColumns: number[]; variableSites: number;
+  /** Present for a nonempty mask projected into this inference alignment. Missing columns remain in excludedColumns. */
+  columnSelection?: { excludedRegions: PhylogenyExcludedRegion[]; userExcludedColumns: number[]; retainedColumns: number[] };
   /** Present only for K80: observed evidence for each complete-deletion pair. */
   k80Comparisons?: K80PairComparison[];
   distances: number[][]; tree: NeighborJoiningTree; splits: PhylogenySplit[]; newick: string;
@@ -42,7 +59,9 @@ export interface PangenomePhylogenyOrigin {
   /** Zero-based positions in the reconstructed parent alignment, in source order. */
   backboneColumns: number[];
   excludedReferenceGapColumns: number[];
-  /** Original parent positions remaining after common complete deletion. */
+  /** Present only when requested: exact parent-alignment mask and its projection into backbone coordinates. */
+  regionExclusions?: { excludedRegions: PhylogenyExcludedRegion[]; parentColumns: number[]; backboneColumns: number[] };
+  /** Original parent positions remaining after explicit exclusions and common complete deletion. */
   retainedAlignmentColumns: number[];
 }
 export interface AlignedPhylogenyExperiment {
@@ -58,9 +77,57 @@ function abort(signal?: AbortSignal): void { if (signal?.aborted) throw new DOME
 function integer(value: unknown, min: number, max: number, label: string): asserts value is number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) throw new Error(`${label} must be an integer from ${min} to ${max}.`);
 }
+/** Canonical union; never mutate the caller's list or silently clip to source length. */
+function excludedRegions(value: unknown): PhylogenyExcludedRegion[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > PHYLOGENY_LIMITS.excludedRegions) throw new Error('Supply at most 256 excluded alignment regions.');
+  const sorted = Array.from(value, region => {
+    if (!region || typeof region !== 'object' || Array.isArray(region)
+      || Object.keys(region).sort().join('|') !== 'end|start'
+      || !Number.isSafeInteger(region.start) || !Number.isSafeInteger(region.end)
+      || region.start < 0 || region.end <= region.start) throw new Error('Excluded regions require nonempty zero-based, half-open integer start/end columns.');
+    return { start: Number(region.start), end: Number(region.end) };
+  }).sort((a, b) => a.start - b.start || a.end - b.end);
+  const result: PhylogenyExcludedRegion[] = [];
+  for (const region of sorted) {
+    const last = result[result.length - 1];
+    if (last && region.start <= last.end) last.end = Math.max(last.end, region.end);
+    else result.push(region);
+  }
+  return result;
+}
+/** Shared CLI/browser notation: 0:10,25:30; blank means use all eligible columns. */
+export function parsePhylogenyExcludedRegions(value: string): PhylogenyExcludedRegion[] {
+  boundedText(value, 10000, 'Excluded alignment regions');
+  if (!value.trim()) return [];
+  const items = value.trim().split(/[\s,]+/);
+  if (items.some(item => !/^\d+:\d+$/.test(item))) throw new Error('Use comma-separated start:end regions, for example 0:10,25:30 (zero-based, end excluded).');
+  return excludedRegions(items.map(item => {
+    const [start, end] = item.split(':').map(Number); return { start, end };
+  }));
+}
+function regionColumns(regions: PhylogenyExcludedRegion[] | undefined, columns: number): number[] {
+  if (!regions) return [];
+  if (regions.some(region => region.end > columns)) throw new Error('An excluded region extends beyond the original source alignment; no interval is clipped.');
+  const excluded: number[] = [];
+  for (const region of regions) for (let column = region.start; column < region.end; column++) excluded.push(column);
+  if (excluded.length === columns) throw new Error('Excluded regions remove every source alignment column.');
+  return excluded;
+}
+function intervalsFor(columns: number[]): PhylogenyExcludedRegion[] {
+  const intervals: PhylogenyExcludedRegion[] = [];
+  for (const column of columns) {
+    const last = intervals[intervals.length - 1];
+    if (last && last.end === column) last.end++;
+    else intervals.push({ start: column, end: column + 1 });
+  }
+  return intervals;
+}
 export function resolvePhylogenyOptions(input: Partial<PhylogenyOptions> = {}): PhylogenyOptions {
-  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['distance', 'deletion', 'bootstrap', 'seed'].includes(key))) throw new Error('Unsupported phylogeny options.');
-  const options = { distance: 'p-distance', deletion: 'complete', bootstrap: 0, seed: 1, ...input } as PhylogenyOptions;
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['distance', 'deletion', 'bootstrap', 'seed', 'excludedRegions'].includes(key))) throw new Error('Unsupported phylogeny options.');
+  const { excludedRegions: requested, ...base } = input, regions = excludedRegions(requested);
+  const options = { distance: 'p-distance', deletion: 'complete', bootstrap: 0, seed: 1, ...base,
+    ...(regions.length ? { excludedRegions: regions } : {}) } as PhylogenyOptions;
   if (options.distance !== 'p-distance' && options.distance !== 'jc69' && options.distance !== 'k80') throw new Error('Choose p-distance, jc69 or k80.');
   if (options.deletion !== 'complete') throw new Error('Only explicit complete-column deletion is supported.');
   integer(options.bootstrap, 0, PHYLOGENY_LIMITS.bootstrap, 'Bootstrap count');
@@ -179,13 +246,14 @@ interface AlignmentPatterns {
   variableSites: number;
 }
 /** Exact column equivalence, not a sketch or a subsample of variable sites. */
-function compressAlignment(taxa: AlignedTaxon[], signal?: AbortSignal): AlignmentPatterns {
+function compressAlignment(taxa: AlignedTaxon[], userExcluded: Set<number>, signal?: AbortSignal): AlignmentPatterns {
   const length = taxa[0].sequence.length;
   const patterns: string[] = [], counts: number[] = [], excludedColumns: number[] = [];
   const patternIds = new Map<string, number>(), siteToPattern = new Uint32Array(length);
   let retained = 0, variableSites = 0;
   for (let column = 0; column < length; column++) {
     if (column % 1024 === 0) abort(signal);
+    if (userExcluded.has(column)) { excludedColumns.push(column); continue; }
     let pattern = '', variable = false;
     const first = taxa[0].sequence[column];
     for (const taxon of taxa) {
@@ -252,9 +320,10 @@ function treeResidual(tree: NeighborJoiningTree, distances: number[][]): number 
 export function inferAlignedPhylogeny(fasta: string, supplied: Partial<PhylogenyOptions> = {}, signal?: AbortSignal): AlignedPhylogenyResult {
   abort(signal);
   const taxa = parseAlignedDNA(fasta), options = resolvePhylogenyOptions(supplied), length = taxa[0].sequence.length;
-  const { patterns, multiplicities, siteToPattern, excludedColumns, variableSites } = compressAlignment(taxa, signal);
+  const userExcludedColumns = regionColumns(options.excludedRegions, length);
+  const { patterns, multiplicities, siteToPattern, excludedColumns, variableSites } = compressAlignment(taxa, new Set(userExcludedColumns), signal);
   const usedSites = siteToPattern.length;
-  if (!usedSites) throw new Error('No complete A/C/G/T alignment columns remain. Missing or ambiguous bases are not matches.');
+  if (!usedSites) throw new Error('No complete A/C/G/T alignment columns remain after explicit exclusions. Missing or ambiguous bases are not matches.');
   const pairs = taxa.length * (taxa.length - 1) / 2;
   // Charge column construction/hash lookup, all original-site bootstrap draws,
   // weight clearing, every pair/pattern evaluation and every NJ reduction.
@@ -295,15 +364,19 @@ export function inferAlignedPhylogeny(fasta: string, supplied: Partial<Phylogeny
       : options.distance === 'k80' ? 'K80 (Kimura two-parameter) distinguishes A↔G/C↔T transitions from transversions, with equal equilibrium base frequencies and homogeneous independent sites. Distances are conditional expected substitutions/site, not a test of model adequacy; either saturated logarithm is unavailable.'
       : 'p-distance is the observed difference fraction; multiple substitutions at a site are not corrected.',
   ];
+  if (options.excludedRegions) warnings.push('Explicit user-selected regions were excluded before distances and site resampling. This selection is a supplied hypothesis, not automatic detection or correction of recombination; selection uncertainty is not estimated.');
   if (excludedColumns.length) warnings.push(`${excludedColumns.length} columns were excluded (0-based positions are retained in the result).`);
   if (!variableSites) warnings.push('No variable usable sites: all taxa are unresolved; zero-length binary resolutions have no supported splits.');
   if (tree.tiedSteps) warnings.push('NJ encountered equal minimum criteria. Deterministic tie-breaking is not independent evidence of a resolved topology.');
   if (negativeEdges) warnings.push('Negative NJ branch lengths are preserved and reported, not clipped. This tree is not suitable for tools requiring nonnegative branch lengths.');
   if (saturated) warnings.push(`${saturated} bootstrap samples had saturated ${options.distance === 'k80' ? 'K80' : 'JC69'} distances. All split supports are withheld rather than conditioning on successful samples.`);
   abort(signal);
+  const omitted = new Set(excludedColumns);
   return { taxa: ids, alignmentSites: length, usedSites, excludedColumns, variableSites, distances, tree, splits, newick: newickFor(tree),
     bootstrap: { requested: options.bootstrap, completed, saturated, supportAvailable }, negativeEdges, zeroEdges, distanceResidualRMSE: treeResidual(tree, distances), warnings,
-    ...(k80Comparisons ? { k80Comparisons } : {}) };
+    ...(k80Comparisons ? { k80Comparisons } : {}),
+    ...(options.excludedRegions ? { columnSelection: { excludedRegions: options.excludedRegions, userExcludedColumns,
+      retainedColumns: Array.from({ length }, (_, column) => column).filter(column => !omitted.has(column)) } } : {}) };
 }
 function validateSource(input: PhylogenySource): PhylogenySource {
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).sort().join('|') !== 'fasta|kind|name|reference') throw new Error('Supply name, fasta, kind and reference for the alignment source.');
@@ -313,7 +386,7 @@ function validateSource(input: PhylogenySource): PhylogenySource {
 }
 export async function createAlignedPhylogenyExperiment(input: PhylogenySource, supplied: Partial<PhylogenyOptions> = {}, signal?: AbortSignal): Promise<AlignedPhylogenyExperiment> {
   const source = validateSource(input), options = resolvePhylogenyOptions(supplied), result = inferAlignedPhylogeny(source.fasta, options, signal);
-  const record = await createAnalysisRecord({ method: ALIGNED_PHYLOGENY_METHOD,
+  const record = await createAnalysisRecord({ method: phylogenyMethod(options),
     inputs: [{ id: 'alignment', accession: null, source: source.kind, description: 'Original aligned DNA FASTA and submitted provenance', data: analysisJson(source) }],
     parameters: analysisJson(options) as AnalysisRecord['parameters'], seed: options.seed,
     references: [{ id: '10.1093/oxfordjournals.molbev.a040454', version: '1987', description: 'Saitou and Nei: neighbor joining' },
@@ -353,14 +426,19 @@ export async function createPangenomePhylogenyExperiment(input: PangenomePhyloge
   }
   const fasta = parent.graph.alignment.map(row => `>${row.id}\n${backboneColumns.map(column => row.sequence[column]).join('')}`).join('\n') + '\n';
   const source = { name: captured.name, fasta, kind: parent.input.source, reference: captured.reference };
-  // Reuse the existing inference/record producer; its v1 contract and identities
-  // remain unchanged. The new record binds that computation to the full parent.
-  const inferred = await createAlignedPhylogenyExperiment(source, options, signal);
+  const parentExcludedColumns = regionColumns(options.excludedRegions, reference.sequence.length), parentExcluded = new Set(parentExcludedColumns);
+  const backboneExcludedColumns = backboneColumns.flatMap((column, index) => parentExcluded.has(column) ? [index] : []);
+  // Requested regions name the FULL parent alignment. Project once before the
+  // ordinary inference API, whose coordinates name its supplied backbone FASTA.
+  const projectedOptions = resolvePhylogenyOptions({ ...options, excludedRegions: intervalsFor(backboneExcludedColumns) });
+  const inferred = await createAlignedPhylogenyExperiment(source, projectedOptions, signal);
   const excluded = new Set(inferred.result.excludedColumns);
   const pangenome: PangenomePhylogenyOrigin = {
     source: captured, parentResultId: parent.record.resultId, referenceId: reference.id,
     columnPolicy: 'reference-backbone-complete', alignmentColumns: reference.sequence.length,
     backboneColumns, excludedReferenceGapColumns,
+    ...(options.excludedRegions ? { regionExclusions: { excludedRegions: options.excludedRegions,
+      parentColumns: parentExcludedColumns, backboneColumns: backboneExcludedColumns } } : {}),
     retainedAlignmentColumns: backboneColumns.filter((_, column) => !excluded.has(column)),
   };
   const warnings = [
@@ -368,13 +446,14 @@ export async function createPangenomePhylogenyExperiment(input: PangenomePhyloge
     'Only reference-backbone columns enter this inference. All reference-gap columns are excluded because left-justified independent insertions do not establish mutual homology. Complete deletion then excludes gaps and ambiguity in any retained taxon.',
     'Reference choice, alignment penalties and optional orientation/circular normalization are conditional assumptions. Their uncertainty is not represented by site-bootstrap proportions.',
     ...parent.graph.diagnostics.limitations,
+    ...(options.excludedRegions ? ['Requested excluded regions name zero-based, half-open columns in the full reconstructed parent alignment, before reference-backbone projection. Their parent and backbone coordinates are both retained; no recombination inference or automatic mask selection is performed.'] : []),
     ...inferred.result.warnings.slice(1),
   ];
   const result = { ...inferred.result, warnings };
   const { source: _original, ...coverage } = pangenome;
   const phylogenyField = inferred.record.fields.phylogeny;
   if (phylogenyField.kind !== 'sequence-score') throw new Error('Reference-backbone inference did not produce a phylogeny score.');
-  const record = await createAnalysisRecord({ method: PANGENOME_PHYLOGENY_METHOD,
+  const record = await createAnalysisRecord({ method: phylogenyMethod(options, true),
     inputs: [{ id: 'pangenome', accession: null, source: source.kind,
       description: 'Exact original sequence-pangenome experiment and user-supplied backbone homology provenance', data: analysisJson(captured) }],
     parameters: analysisJson({ ...options, columnPolicy: pangenome.columnPolicy }) as AnalysisRecord['parameters'], seed: options.seed,
@@ -391,15 +470,18 @@ export async function createPangenomePhylogenyExperiment(input: PangenomePhyloge
 export async function replayAlignedPhylogenyExperiment(content: string, signal?: AbortSignal): Promise<AlignedPhylogenyExperiment> {
   abort(signal);
   boundedText(content, 10 * 1024 * 1024, 'Saved phylogeny');
-  const header: unknown = JSON.parse(content);
-  const method = header && typeof header === 'object' && 'method' in header ? header.method : null;
-  const version = method && typeof method === 'object' && 'version' in method && method.version === PANGENOME_PHYLOGENY_METHOD.version
-    ? PANGENOME_PHYLOGENY_METHOD.version : ALIGNED_PHYLOGENY_METHOD.version;
+  // Select only a supported format before hashing potentially incompatible inputs;
+  // the full parser still verifies its schema, method and every content checksum.
+  const version = (JSON.parse(content) as { method?: { version?: unknown } } | null)?.method?.version;
+  if (typeof version !== 'string' || !['1.0.0', '2.0.0', '3.0.0', '4.0.0'].includes(version)) throw new Error('Saved aligned-phylogeny method version is incompatible.');
   const saved = await parseAnalysisRecord(content, { methodId: ALIGNED_PHYLOGENY_METHOD.id, methodVersion: version });
+  const masked = saved.method.version === '3.0.0' || saved.method.version === '4.0.0';
+  const linked = saved.method.version === '2.0.0' || saved.method.version === '4.0.0';
+  const explicitOptions = ['bootstrap', 'deletion', 'distance', 'seed', ...(masked ? ['excludedRegions'] : [])];
   abort(signal);
-  if (saved.method.version === PANGENOME_PHYLOGENY_METHOD.version) {
+  if (linked) {
     if (saved.inputs.length !== 1 || saved.inputs[0].id !== 'pangenome'
-      || Object.keys(saved.parameters).sort().join('|') !== 'bootstrap|columnPolicy|deletion|distance|seed'
+      || Object.keys(saved.parameters).sort().join('|') !== [...explicitOptions, 'columnPolicy'].sort().join('|')
       || saved.parameters.columnPolicy !== 'reference-backbone-complete') throw new Error('Pangenome phylogeny replay requires the full parent and explicit reference-backbone policy.');
     const { columnPolicy: _policy, ...options } = saved.parameters;
     const fresh = await createPangenomePhylogenyExperiment(saved.inputs[0].data as unknown as PangenomePhylogenySource,
@@ -407,8 +489,7 @@ export async function replayAlignedPhylogenyExperiment(content: string, signal?:
     if (fresh.record.cacheKey !== saved.cacheKey || fresh.record.resultId !== saved.resultId) throw new Error('Recomputed pangenome alignment, projection or phylogeny differs from the saved experiment.');
     return fresh;
   }
-  if (saved.method.version !== ALIGNED_PHYLOGENY_METHOD.version) throw new Error('Unsupported aligned-phylogeny method version.');
-  if (saved.inputs.length !== 1 || saved.inputs[0].id !== 'alignment' || Object.keys(saved.parameters).sort().join('|') !== 'bootstrap|deletion|distance|seed') throw new Error('Experiment requires one original alignment and all explicit options.');
+  if (saved.inputs.length !== 1 || saved.inputs[0].id !== 'alignment' || Object.keys(saved.parameters).sort().join('|') !== explicitOptions.sort().join('|')) throw new Error('Experiment requires one original alignment and all explicit options.');
   const experiment = await createAlignedPhylogenyExperiment(saved.inputs[0].data as unknown as PhylogenySource, saved.parameters as unknown as PhylogenyOptions, signal);
   if (experiment.record.cacheKey !== saved.cacheKey || experiment.record.resultId !== saved.resultId) throw new Error('Recomputed phylogeny differs from the saved experiment.');
   return experiment;

@@ -305,3 +305,24 @@ describe('root hypotheses in the aligned workspace', () => {
     }
   });
 });
+
+describe('source-column exclusions in the phylogeny worker', () => {
+  test('replays the exact region selection and snapshots nested settings before yielding', async () => {
+    const input = request(); input.options.excludedRegions = [{ start: 0, end: 2 }];
+    const { session, workers } = workspace(), expected = structuredClone(input);
+    const pending = session.run(input); await tick();
+    input.options.excludedRegions[0].end = 10;
+    assert.deepEqual(workers[0].request, expected);
+    const experiment = await executeAlignedPhylogenyRequest(expected);
+    assert.equal(experiment.record.method.version, '3.0.0');
+    assert.equal(experiment.result.usedSites, 10);
+    assert.equal(experiment.result.distances[0][2], 2 / 10);
+    assert.deepEqual(experiment.result.columnSelection?.retainedColumns, [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    workers[0].emit({ kind: 'result', experiment, verified: false });
+    assert.equal(await pending, true);
+    const restored = await executeAlignedPhylogenyRequest({ kind: 'replay', content: serializeAnalysisRecord(experiment.record) });
+    assert.deepEqual(restored, experiment); session.deactivate();
+    await assert.rejects(executeAlignedPhylogenyRequest({ ...expected, options: { ...expected.options,
+      excludedRegions: [{ start: 11, end: 13 }] } }), /beyond/);
+  });
+});

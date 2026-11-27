@@ -2,7 +2,7 @@ import { describe, test } from 'bun:test';
 import { strict as assert } from 'node:assert';
 import { analysisJson, createAnalysisRecord, serializeAnalysisRecord, type AnalysisField } from '../analysis-result';
 import { parseAlignedDNA, neighborJoining, inferAlignedPhylogeny, resolvePhylogenyOptions,
-  createAlignedPhylogenyExperiment, replayAlignedPhylogenyExperiment, PHYLOGENY_LIMITS,
+  createAlignedPhylogenyExperiment, replayAlignedPhylogenyExperiment, parsePhylogenyExcludedRegions, PHYLOGENY_LIMITS,
   type NeighborJoiningTree, type PhylogenyOptions, type PhylogenySource } from './aligned-phylogeny';
 const fasta = (records: Record<string, string>): string => Object.entries(records).map(([id, sequence]) => `>${id}\n${sequence}`).join('\n');
 const alignment = fasta({ A: 'A'.repeat(80), B: 'A'.repeat(80), C: 'C'.repeat(40) + 'A'.repeat(40), D: 'C'.repeat(40) + 'A'.repeat(40) });
@@ -65,7 +65,8 @@ describe('aligned DNA import and independent counts', () => {
 function originalColumnOracle(records: Record<string, string>, options: PhylogenyOptions) {
   const ids = Object.keys(records).sort(), length = records[ids[0]].length;
   const retained = Array.from({ length }, (_, column) => column)
-    .filter(column => ids.every(id => /^[ACGT]$/.test(records[id][column])));
+    .filter(column => !options.excludedRegions?.some(region => column >= region.start && column < region.end)
+      && ids.every(id => /^[ACGT]$/.test(records[id][column])));
   const changes = new Set(['AG', 'GA', 'CT', 'TC']);
   const distancesFor = (columns: number[]): number[][] | null => {
     const matrix = ids.map(() => ids.map(() => 0));
@@ -378,5 +379,85 @@ describe('Kimura two-parameter aligned distances', () => {
       assert.ok(!('k80Comparisons' in experiment.result));
       assert.deepEqual(await replayAlignedPhylogenyExperiment(serializeAnalysisRecord(experiment.record)), experiment);
     }
+  });
+});
+
+describe('explicit source-alignment exclusions', () => {
+  test('changes a competing quartet split using independently counted retained columns', () => {
+    // Six AB|CD columns and four AC|BD columns. Removing the first six must
+    // leave the AC|BD split with distances 0 within each side and 1 across it.
+    const input = fasta({ A: 'AAAAAAAAAA', B: 'AAAAAACCCC', C: 'CCCCCCAAAA', D: 'CCCCCCCCCC' });
+    assert.deepEqual(inferAlignedPhylogeny(input).splits[0].side, ['A', 'B']);
+    const result = inferAlignedPhylogeny(input, { excludedRegions: [{ start: 0, end: 6 }], bootstrap: 20, seed: 0 });
+    assert.equal(result.usedSites, 4); assert.equal(result.variableSites, 4);
+    assert.deepEqual(result.distances, [[0, 1, 0, 1], [1, 0, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0]]);
+    assert.deepEqual(result.splits[0].side, ['A', 'C']); near(result.splits[0].length, 1);
+    assert.equal(result.splits[0].bootstrapCount, 20);
+    assert.deepEqual(result.columnSelection, { excludedRegions: [{ start: 0, end: 6 }],
+      userExcludedColumns: [0, 1, 2, 3, 4, 5], retainedColumns: [6, 7, 8, 9] });
+  });
+  test('unites explicit and missing-column exclusions without changing the original coordinate frame', () => {
+    const result = inferAlignedPhylogeny(fasta({ A: 'ACGTN-', B: 'ATGTAA', C: 'ACNTAA' }),
+      { excludedRegions: [{ start: 1, end: 2 }] });
+    assert.equal(result.alignmentSites, 6); assert.equal(result.usedSites, 2); assert.equal(result.variableSites, 0);
+    assert.deepEqual(result.excludedColumns, [1, 2, 4, 5]);
+    assert.deepEqual(result.columnSelection, { excludedRegions: [{ start: 1, end: 2 }], userExcludedColumns: [1], retainedColumns: [0, 3] });
+    assert.ok(result.distances.every(row => row.every(value => value === 0)));
+  });
+  test('resamples literal retained source positions with the independently addressed seed stream', () => {
+    const records = { A: 'AAAAAAAAAAAA', B: 'ACAAACAAACAA', C: 'AAAAGGGGAAAA', D: 'CAAAGGGGAAAN' };
+    const options: PhylogenyOptions = { distance: 'p-distance', deletion: 'complete', bootstrap: 40, seed: 0,
+      excludedRegions: [{ start: 1, end: 3 }, { start: 6, end: 8 }] };
+    const expected = originalColumnOracle(records, options), result = inferAlignedPhylogeny(fasta(records), options);
+    assert.deepEqual(result.columnSelection?.retainedColumns, [0, 3, 4, 5, 8, 9, 10]);
+    assert.deepEqual(result.distances, expected.distances); assert.deepEqual(result.tree, expected.tree);
+    assert.equal(result.bootstrap.saturated, expected.saturated);
+    for (const split of result.splits) assert.equal(split.bootstrapCount, expected.counts.get(JSON.stringify(split.side)));
+    const cut = fasta(Object.fromEntries(Object.entries(records).map(([id, sequence]) => [id,
+      [0, 3, 4, 5, 8, 9, 10].map(column => sequence[column]).join('')])));
+    const independentlyCut = inferAlignedPhylogeny(cut, { bootstrap: 40, seed: 0 });
+    assert.deepEqual(result.distances, independentlyCut.distances); assert.deepEqual(result.splits, independentlyCut.splits);
+  });
+  test('canonicalizes the supplied union without mutation and preserves empty-mask identities', async () => {
+    const regions = [{ start: 4, end: 6 }, { start: 1, end: 3 }, { start: 2, end: 4 }], original = structuredClone(regions);
+    assert.deepEqual(resolvePhylogenyOptions({ excludedRegions: regions }).excludedRegions, [{ start: 1, end: 6 }]);
+    assert.deepEqual(regions, original);
+    assert.deepEqual(parsePhylogenyExcludedRegions('4:6, 1:3 2:4'), [{ start: 1, end: 6 }]);
+    assert.deepEqual(parsePhylogenyExcludedRegions('  '), []);
+    const ordinary = await createAlignedPhylogenyExperiment(source, { bootstrap: 20, seed: 0 });
+    assert.deepEqual(await createAlignedPhylogenyExperiment(source, { bootstrap: 20, seed: 0, excludedRegions: [] }), ordinary);
+    assert.equal(ordinary.record.method.version, '1.0.0');
+    const supplied = { excludedRegions: [{ start: 1, end: 3 }] };
+    const pending = createAlignedPhylogenyExperiment(source, supplied); supplied.excludedRegions[0].end = 40;
+    const captured = await pending; assert.deepEqual(captured.options.excludedRegions, [{ start: 1, end: 3 }]);
+    assert.equal(captured.record.method.version, '3.0.0');
+    assert.deepEqual(await replayAlignedPhylogenyExperiment(serializeAnalysisRecord(captured.record)), captured);
+  });
+  test('rejects malformed, sparse, out-of-range and wholly excluded masks without clipping', () => {
+    for (const regions of [null, {}, [null], Array(1), [{ start: 0 }], [{ start: 0, end: 1, extra: true }],
+      [{ start: -1, end: 1 }], [{ start: 0.5, end: 2 }], [{ start: 2, end: 2 }], [{ start: 2, end: 1 }],
+      [{ start: 0, end: Infinity }], Array.from({ length: 257 }, () => ({ start: 0, end: 1 }))]) {
+      assert.throws(() => resolvePhylogenyOptions({ excludedRegions: regions } as unknown as PhylogenyOptions));
+    }
+    for (const notation of ['1-3', '-1:3', '1:1', '0:9007199254740992', '0:2,']) assert.throws(() => parsePhylogenyExcludedRegions(notation));
+    for (const regions of [[{ start: 79, end: 81 }], [{ start: 0, end: 80 }], [{ start: 0, end: 40 }, { start: 40, end: 80 }]]) {
+      assert.throws(() => inferAlignedPhylogeny(alignment, { excludedRegions: regions }), /source alignment/);
+    }
+    assert.throws(() => inferAlignedPhylogeny(fasta({ A: 'AN', B: 'AA', C: 'AA' }),
+      { excludedRegions: [{ start: 0, end: 1 }] }), /No complete/);
+  });
+  test('rejects missing, changed or empty saved masks even with freshly forged content checksums', async () => {
+    const experiment = await createAlignedPhylogenyExperiment(source, { excludedRegions: [{ start: 0, end: 5 }] });
+    const { excludedRegions: _mask, ...missing } = experiment.record.parameters;
+    for (const parameters of [missing, { ...experiment.record.parameters, excludedRegions: [] },
+      { ...experiment.record.parameters, excludedRegions: [{ start: 10, end: 20 }] }]) {
+      const forged = await createAnalysisRecord({ ...experiment.record, parameters });
+      await assert.rejects(replayAlignedPhylogenyExperiment(serializeAnalysisRecord(forged)), /explicit|Recomputed/);
+    }
+    const field = experiment.record.fields.phylogeny;
+    const forged = await createAnalysisRecord({ ...experiment.record, fields: { ...experiment.record.fields,
+      phylogeny: { ...field, value: analysisJson({ ...experiment.result, columnSelection: {
+        ...experiment.result.columnSelection, retainedColumns: [0, 1, 2] } }) } as AnalysisField } });
+    await assert.rejects(replayAlignedPhylogenyExperiment(serializeAnalysisRecord(forged)), /Recomputed/);
   });
 });

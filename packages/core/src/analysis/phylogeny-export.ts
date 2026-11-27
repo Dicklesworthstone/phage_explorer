@@ -48,13 +48,14 @@ export function exportPhylogeny(experiment: AlignedPhylogenyExperiment, format: 
   const { result, options, record } = experiment;
   const metadata = `# method\t${record.method.id}\n# method_version\t${record.method.version}\n# result_id\t${record.resultId}\n# distance_method\t${options.distance}\n# used_sites\t${result.usedSites}\n`
     + (experiment.pangenome ? `# pangenome_result_id\t${experiment.pangenome.parentResultId}\n# column_policy\t${experiment.pangenome.columnPolicy}\n# pangenome_alignment_sites\t${experiment.pangenome.alignmentColumns}\n# reference_backbone_sites\t${experiment.pangenome.backboneColumns.length}\n# excluded_reference_gap_sites\t${experiment.pangenome.excludedReferenceGapColumns.length}\n` : '');
+  const selection = options.excludedRegions ? `# excluded_region_coordinates\t${experiment.pangenome ? 'pangenome-parent-alignment' : 'original-alignment'}; zero-based; end-exclusive\n# excluded_regions_json\t${JSON.stringify(options.excludedRegions)}\n# retained_source_columns_json\t${JSON.stringify(experiment.pangenome?.retainedAlignmentColumns ?? result.columnSelection?.retainedColumns)}\n` : '';
   if (format === 'distances-tsv') {
-    return metadata + ['taxon\t' + result.taxa.join('\t'), ...result.taxa.map((id, i) =>
+    return metadata + selection + ['taxon\t' + result.taxa.join('\t'), ...result.taxa.map((id, i) =>
       [id, ...result.distances[i]].join('\t'))].join('\n') + '\n';
   }
   if (format === 'splits-tsv') {
     const header = 'side_json\tother_side_json\tbranch_length\tbootstrap_count\tbootstrap_requested\tbootstrap_completed\tbootstrap_saturated\tsupport_fraction';
-    return metadata + [header, ...result.splits.map(split => [JSON.stringify(split.side), JSON.stringify(split.other), split.length,
+    return metadata + selection + [header, ...result.splits.map(split => [JSON.stringify(split.side), JSON.stringify(split.other), split.length,
       split.bootstrapCount ?? '', result.bootstrap.requested, result.bootstrap.completed, result.bootstrap.saturated,
       split.support ?? ''].join('\t'))].join('\n') + '\n';
   }

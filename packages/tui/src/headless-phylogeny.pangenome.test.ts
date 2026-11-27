@@ -8,6 +8,7 @@ import { createPangenomePhylogenyExperiment, replayAlignedPhylogenyExperiment, r
 import { createAnalysisRecord, serializeAnalysisRecord } from '../../core/src/analysis-result';
 import { preparePhylogenyDownload } from '../../web/src/utils/phylogeny-download';
 import { executePhylogenyTask, parsePhylogenyCommand, performPhylogenyTask, runPhylogenyCommand } from './headless-phylogeny';
+import { executePhylogenyCommand as executeLegacyPhylogeny, parsePhylogenyCommand as parseLegacyPhylogeny } from '../../../scripts/phylogeny';
 
 async function fixture() {
   const input: PangenomeInput = { format: 'phage-explorer-pangenome', version: 1, source: 'demo', name: 'PRIVATE_PARENT_NAME',
@@ -106,4 +107,53 @@ describe('headless pangenome to aligned phylogeny', () => {
       source: { name: 'Direct alignment', kind: 'demo', reference: 'Synthetic three-taxon test.' }, options: resolvePhylogenyOptions() });
     await assert.rejects(performPhylogenyTask({ type: 'export', content: created.output!, format: 'pangenome-experiment' }), /pangenome/);
   });
+});
+
+describe('headless explicit source-region selection', () => {
+  test('keeps the legacy entry point mask and verified-export behavior consistent', async () => {
+    const { dir } = await fixture(), output = join(dir, 'legacy-masked.json');
+    const raw = parseLegacyPhylogeny(['infer', '--alignment', 'supplied.fa', '--source', 'Synthetic provenance',
+      '--output', 'new.json', '--exclude-regions', '3:8']);
+    if (raw.type !== 'infer') throw new Error('Expected raw inference');
+    assert.deepEqual(raw.options.excludedRegions, [{ start: 3, end: 8 }]);
+    const command = parseLegacyPhylogeny(['infer-pangenome', '--experiment', join(dir, 'pangenome.json'),
+      '--column-policy', 'reference-backbone-complete', '--source', 'Synthetic provenance', '--output', output,
+      '--exclude-regions', '3:8']);
+    if (command.type !== 'infer-pangenome') throw new Error('Expected parent inference');
+    const summary = await executeLegacyPhylogeny(command);
+    assert.equal(summary.usedSites, 13);
+    const saved = await replayAlignedPhylogenyExperiment(await readFile(output, 'utf8'));
+    assert.equal(saved.record.method.version, '4.0.0');
+    await executeLegacyPhylogeny({ type: 'export', experiment: output, format: 'distances', output: join(dir, 'legacy-distances.tsv') });
+    assert.match(await readFile(join(dir, 'legacy-distances.tsv'), 'utf8'), /# excluded_region_coordinates\tpangenome-parent-alignment/);
+  }, 30000);
+  test('parses the same canonical half-open notation for raw and parent-alignment inputs', () => {
+    for (const args of [inferArgs('/tmp'), ['infer', '--input', 'aligned.fa', '--alignment', 'provided',
+      '--name', 'Synthetic quartet', '--reference', 'Independent test alignment', '--output', 'new.json']]) {
+      const parsed = parsePhylogenyCommand([...args, '--exclude-regions', '6:8,3:6']);
+      if (parsed.type !== 'infer' && parsed.type !== 'infer-pangenome') throw new Error('Expected inference');
+      assert.deepEqual(parsed.options.excludedRegions, [{ start: 3, end: 8 }]);
+      for (const invalid of ['3-8', '1:1', '-1:2', '0:9007199254740992']) {
+        assert.throws(() => parsePhylogenyCommand([...args, '--exclude-regions', invalid]));
+      }
+    }
+  });
+  test('runs masked parent projection, verifies it, and retains exact mapping and source exports', async () => {
+    const { dir, content } = await fixture();
+    const summary = await runPhylogenyCommand([...inferArgs(dir), '--exclude-regions', '3:8']) as Record<string, unknown>;
+    assert.equal(summary.usedSites, 13);
+    const saved = await readFile(join(dir, 'phylogeny.json'), 'utf8'), experiment = await replayAlignedPhylogenyExperiment(saved);
+    assert.equal(experiment.record.method.version, '4.0.0');
+    assert.deepEqual(experiment.pangenome?.regionExclusions?.parentColumns, [3, 4, 5, 6, 7]);
+    assert.deepEqual(experiment.pangenome?.regionExclusions?.backboneColumns, [3, 4, 5]);
+    assert.deepEqual(experiment.result.distances, [[0, 1, 2, 3], [1, 0, 3, 4], [2, 3, 0, 1], [3, 4, 1, 0]].map(row => row.map(value => value / 13)));
+    await runPhylogenyCommand(['verify', '--experiment', join(dir, 'phylogeny.json')]);
+    await runPhylogenyCommand(exportArgs(dir, 'distances-tsv', 'masked.tsv'));
+    assert.match(await readFile(join(dir, 'masked.tsv'), 'utf8'), /# excluded_regions_json\t\[\{"start":3,"end":8\}\]/);
+    await runPhylogenyCommand(exportArgs(dir, 'pangenome-experiment', 'original-parent.json'));
+    assert.equal(await readFile(join(dir, 'original-parent.json'), 'utf8'), content);
+    const args = [...inferArgs(dir), '--exclude-regions', '0:18'].map(value => value === join(dir, 'phylogeny.json') ? join(dir, 'invalid.json') : value);
+    await assert.rejects(runPhylogenyCommand(args), /every source alignment column/);
+    await assert.rejects(stat(join(dir, 'invalid.json')), { code: 'ENOENT' });
+  }, 30000);
 });

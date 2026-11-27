@@ -19,7 +19,7 @@ import { COMMAND_LIMITS, CommandSession, commandValuesEqual, parseCommandTape, t
 import { WORKFLOW_RESULTS_LIMITS, WorkflowResultCollector, parseWorkflowResults, serializeWorkflowResults, workflowResultIndex,
   type WorkflowResults } from '../../../core/src/workflow-results';
 import { resolveAlignmentGraphOptions, validatePangenomeInput, type AlignmentGraphOptions } from '../../../core/src/analysis/alignment-pangenome';
-import { PANGENOME_PHYLOGENY_METHOD, PHYLOGENY_LIMITS, resolvePhylogenyOptions,
+import { phylogenyMethod, PHYLOGENY_LIMITS, resolvePhylogenyOptions,
   type PhylogenyOptions, type PangenomePhylogenySource } from '../../../core/src/analysis/aligned-phylogeny';
 import { pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../workers/PangenomeSession';
 import { GENOME_COMPARISON_METHOD, GENOME_COMPARISON_LIMITS, resolveGenomeComparisonOptions,
@@ -564,12 +564,12 @@ export class ResearchWorkflow {
           const parent = await this.pangenome(values.pangenome, signal, true);
           abort(signal); parent.genomes.forEach(genome => this.matchLoaded(genome, signal));
           const source = { name: values.name, reference: values.reference, experiment: serializeAnalysisRecord(parent.record) };
-          const produced = await environment.phylogeny!(structuredClone(source), { ...values.options }, signal);
+          const produced = await environment.phylogeny!(structuredClone(source), structuredClone(values.options), signal);
           abort(signal);
           const record = await parseAnalysisRecord(serializeAnalysisRecord(produced));
           abort(signal);
           const origin = record.fields.pangenome?.value;
-          if (!commandValuesEqual(analysisJson(record.method), analysisJson(PANGENOME_PHYLOGENY_METHOD))
+          if (!commandValuesEqual(analysisJson(record.method), analysisJson(phylogenyMethod(values.options, true)))
             || record.inputs.length !== 1 || record.inputs[0].id !== 'pangenome' || record.inputs[0].source !== 'local'
             || record.inputs[0].accession !== null || !commandValuesEqual(record.inputs[0].data, analysisJson(source))
             || !commandValuesEqual(record.parameters, analysisJson({ ...values.options, columnPolicy: 'reference-backbone-complete' }))

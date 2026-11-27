@@ -361,3 +361,26 @@ describe('root choice and reproducible evidence', () => {
     await assert.rejects(pending, { name: 'AbortError' });
   });
 });
+
+describe('explicit distance-region masks in rooted and ancestral lineage', () => {
+  test('retains original raw-MSA columns and a separate ancestral window policy', async () => {
+    const unrooted = await createAlignedPhylogenyExperiment({ name: 'Masked quartet', kind: 'demo',
+      reference: 'Synthetic paired sequences; explicit first-column removal.', fasta },
+      { distance: 'jc69', excludedRegions: [{ start: 0, end: 1 }] });
+    const rooted = await rootAlignedPhylogenyExperiment(serializeAnalysisRecord(unrooted.record), decision());
+    assert.equal(rooted.record.method.version, '3.0.0');
+    assert.deepEqual(await replayRootedPhylogenyExperiment(serializeAnalysisRecord(rooted.record)), rooted);
+    assert.deepEqual(rooted.unrooted.result.columnSelection?.retainedColumns, [1, 2, 3, 4, 5, 6, 7]);
+    const prepared = await prepareRootedAncestralDataset(serializeAnalysisRecord(rooted.record), 'Synthetic test permission');
+    assert.deepEqual(prepared.phylogenyColumns, { source: 'original-alignment', excludedRegions: [{ start: 0, end: 1 }],
+      ancestralColumnToSourceColumn: [0, 1, 2, 3, 4, 5, 6, 7], retainedTreeSourceColumns: [1, 2, 3, 4, 5, 6, 7] });
+    assert.equal(parseAncestralFasta(prepared.input.alignment.fasta)[0].sequence.length, 8);
+    const ancestral = await createRootedAncestralExperiment(serializeAnalysisRecord(rooted.record), 'Synthetic test permission',
+      { startColumn: 1, endColumn: 2 });
+    assert.deepEqual(ancestral.phylogenyColumns, prepared.phylogenyColumns);
+    assert.deepEqual(await replayRootedAncestralExperiment(serializeAnalysisRecord(ancestral.record)), ancestral);
+    const forged = structuredClone(rooted.record);
+    delete (forged.parameters.phylogeny as Record<string, unknown>).excludedRegions;
+    await assert.rejects(replayRootedPhylogenyExperiment(serializeAnalysisRecord(await createAnalysisRecord(forged))), /every original phylogeny option/);
+  });
+});

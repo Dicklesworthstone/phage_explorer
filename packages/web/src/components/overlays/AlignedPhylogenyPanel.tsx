@@ -1,7 +1,7 @@
 /** Aligned FASTA or reconstructed pangenome -> unrooted NJ -> portable evidence. */
 import React, { useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
 import { serializeAnalysisRecord } from '../../../../core/src/analysis-result';
-import { PHYLOGENY_LIMITS, resolvePhylogenyOptions, type AlignedPhylogenyResult, type PhylogenyOptions, type PhylogenySource } from '../../../../core/src/analysis/aligned-phylogeny';
+import { PHYLOGENY_LIMITS, parsePhylogenyExcludedRegions, resolvePhylogenyOptions, type AlignedPhylogenyResult, type PhylogenyOptions, type PhylogenySource } from '../../../../core/src/analysis/aligned-phylogeny';
 import { resolveOutgroupRooting, type RootedPhylogenyResult } from '../../../../core/src/analysis/phylogeny-rooting';
 import { AlignedPhylogenySession, readAlignedPhylogenyFile } from '../../workers/AlignedPhylogenySession';
 import { downloadString } from '../../utils/export';
@@ -71,6 +71,7 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
   const [pangenomeFile, setPangenomeFile] = useState<File | null>(null), [pangenomeContent, setPangenomeContent] = useState('');
   const [distance, setDistance] = useState<PhylogenyOptions['distance']>('p-distance');
   const [bootstrap, setBootstrap] = useState('0'), [seed, setSeed] = useState('1');
+  const [excludedRegions, setExcludedRegions] = useState('');
   const [confirmed, setConfirmed] = useState(false), [localError, setLocalError] = useState<string | null>(null);
   const [distancePage, setDistancePage] = useState(0), [showDistances, setShowDistances] = useState(false);
   const [outgroup, setOutgroup] = useState<string[]>([]), [rootFraction, setRootFraction] = useState('');
@@ -81,6 +82,7 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
     setSource(accepted.source); setFile(null); setDistance(accepted.options.distance);
     setInputMode(accepted.pangenome ? 'pangenome' : 'alignment'); setPangenomeFile(null);
     setPangenomeContent(accepted.pangenome?.source.experiment ?? '');
+    setExcludedRegions(accepted.options.excludedRegions?.map(region => `${region.start}:${region.end}`).join(',') ?? '');
     setBootstrap(String(accepted.options.bootstrap)); setSeed(String(accepted.options.seed)); setConfirmed(true); setDistancePage(0);
     const rooting = accepted.rooting?.result.rooting;
     setOutgroup(rooting?.outgroup ?? []); setRootFraction(rooting ? String(rooting.fractionFromOutgroup) : '');
@@ -98,7 +100,8 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
         ? 'Confirm the reference-backbone column policy and the supplied homology provenance.'
         : 'Confirm that these are homologous, already aligned DNA columns.');
       if (!/^\d+$/.test(bootstrap) || !/^\d+$/.test(seed)) throw new Error('Bootstrap count and seed must be explicit nonnegative decimal integers.');
-      const options = resolvePhylogenyOptions({ distance, deletion: 'complete', bootstrap: Number(bootstrap), seed: Number(seed) });
+      const options = resolvePhylogenyOptions({ distance, deletion: 'complete', bootstrap: Number(bootstrap), seed: Number(seed),
+        excludedRegions: parsePhylogenyExcludedRegions(excludedRegions) });
       if (inputMode === 'pangenome') {
         const captured = { name: source.name, reference: source.reference, experiment: pangenomeContent }, submittedFile = pangenomeFile;
         if (!submittedFile && !captured.experiment) throw new Error('Choose a saved pangenome experiment JSON.');
@@ -165,7 +168,7 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
       Save a snapshot locally or export JSON before closing. Reopening a snapshot recomputes its complete recorded inference and any parent experiments.</p>
     <form onSubmit={submit} style={{ display: 'grid', gap: '.75rem' }}>
       <fieldset disabled={libraryBusy} style={{ display: 'contents', border: 0, padding: 0, margin: 0 }}>
-      <label style={label}>Phylogeny input<select style={control} value={inputMode} onChange={e => { invalidate(); setInputMode(e.target.value as typeof inputMode); setConfirmed(false); }}>
+      <label style={label}>Phylogeny input<select style={control} value={inputMode} onChange={e => { invalidate(); setInputMode(e.target.value as typeof inputMode); setExcludedRegions(''); setConfirmed(false); }}>
         <option value="alignment">Already aligned DNA FASTA</option><option value="pangenome">Saved pangenome experiment · reference backbone</option></select></label>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%,220px),1fr))', gap: '.75rem' }}>
         <label style={label}>Alignment name<input style={control} required maxLength={200} value={source.name} onChange={e => editSource('name', e.target.value)} /></label>
@@ -177,6 +180,14 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
         <label style={label}>Site-bootstrap replicates (0 or 20–200)<input style={control} type="number" required min={0} max={200} step={1} value={bootstrap} onChange={e => { invalidate(); setBootstrap(e.target.value); }} /></label>
         <label style={label}>Phylogeny seed (0–4294967295)<input style={control} type="number" required min={0} max={0xffffffff} step={1} value={seed} onChange={e => { invalidate(); setSeed(e.target.value); }} /></label>
       </div>
+      <label style={label}>Exclude alignment regions (optional)<input style={control} maxLength={10000} value={excludedRegions}
+        placeholder="0:10,25:30" aria-describedby={`${id}-excluded-regions-help`}
+        onChange={event => { invalidate(); setExcludedRegions(event.target.value); }} /></label>
+      <p id={`${id}-excluded-regions-help`}>Use zero-based, half-open start:end ranges: 0:10 excludes columns 0 through 9.
+        {inputMode === 'pangenome' ? ' Coordinates name the full reconstructed parent alignment, before reference-backbone projection.'
+          : ' Coordinates name the original supplied aligned FASTA, before complete deletion.'}
+        {' '}These regions are removed from every pairwise distance and bootstrap sample. Blank uses all eligible columns.
+        This records your supplied selection; it does not detect or correct recombination. Out-of-range intervals are rejected.</p>
       {inputMode === 'alignment' ? <>
       <label style={label}>Already aligned DNA FASTA<textarea rows={6} maxLength={PHYLOGENY_LIMITS.bytes} value={source.fasta} disabled={!!file} spellCheck={false} onChange={e => editSource('fasta', e.target.value)} /></label>
       <label style={label}>Or choose aligned FASTA (up to 2 MiB)<input style={control} type="file" accept=".fa,.fasta,.fas,.fna,.txt" onChange={e => { const selected = e.currentTarget.files?.[0]; e.currentTarget.value = ''; if (selected) { invalidate(); setFile(selected); setConfirmed(false); } }} /></label>
@@ -197,7 +208,7 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
         : 'I confirm these are homologous, already aligned DNA columns, not unaligned genomes.'}</label>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.5rem' }}>
         <button type="submit" style={control} disabled={busy}>Infer unrooted tree</button>
-        <button type="button" style={control} onClick={() => { invalidate(); setInputMode('alignment'); setPangenomeFile(null); setPangenomeContent(''); setSource({ ...example }); setFile(null); setDistance('p-distance'); setBootstrap('20'); setSeed('0'); setConfirmed(true); }}>Load synthetic quartet</button>
+        <button type="button" style={control} onClick={() => { invalidate(); setInputMode('alignment'); setPangenomeFile(null); setPangenomeContent(''); setSource({ ...example }); setFile(null); setDistance('p-distance'); setExcludedRegions(''); setBootstrap('20'); setSeed('0'); setConfirmed(true); }}>Load synthetic quartet</button>
         <button type="button" style={control} disabled={!busy} onClick={session.cancel}>Cancel tree computation</button>
       </div>
       </fieldset>
@@ -232,7 +243,7 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
         <h5>Verified pangenome → reference backbone</h5>
         <p>Reference: {accepted.pangenome.referenceId}. Of {accepted.pangenome.alignmentColumns} original alignment columns,
           {' '}{accepted.pangenome.excludedReferenceGapColumns.length} reference-gap columns were excluded before inference.
-          {' '}{accepted.pangenome.backboneColumns.length} backbone columns remain, of which {accepted.pangenome.retainedAlignmentColumns.length} passed complete deletion.</p>
+          {' '}{accepted.pangenome.backboneColumns.length} backbone columns remain, of which {accepted.pangenome.retainedAlignmentColumns.length} passed explicit exclusions and complete deletion.</p>
         <p>Parent result: {accepted.pangenome.parentResultId}. Bootstrap support is conditional on this reference, alignment and column policy.</p>
         <details><summary>Original pangenome column mapping (0-based)</summary>
           <p>Excluded reference-gap columns: {accepted.pangenome.excludedReferenceGapColumns.join(', ') || 'None'}</p>
@@ -241,6 +252,15 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
       </section>}
       <p>{verified ? 'Replay verified against fresh computation. ' : ''}{result.taxa.length} taxa; {result.usedSites}/{result.alignmentSites} columns retained; {result.variableSites} variable sites.
         {' '}{result.negativeEdges} negative and {result.zeroEdges} numerically zero edges; distance reconstruction RMSE {number(result.distanceResidualRMSE)}.</p>
+      {accepted.options.excludedRegions && <section aria-label="Explicit alignment region exclusions">
+        <h5>User-selected alignment exclusions</h5>
+        <p>Requested intervals: {accepted.options.excludedRegions.map(region => `[${region.start}, ${region.end})`).join(', ')}.
+          {' '}Coordinates refer to the {accepted.pangenome ? 'full parent alignment before backbone projection' : 'original aligned FASTA'}.
+          Distances and bootstrap draws use the same retained columns.</p>
+        <details><summary>Exact retained source columns (0-based)</summary>
+          <p>{(accepted.pangenome?.retainedAlignmentColumns ?? result.columnSelection?.retainedColumns)?.join(', ')}</p>
+        </details>
+      </section>}
       <Topology result={result} />
       <p>Site resampling: {result.bootstrap.completed}/{result.bootstrap.requested} completed; {result.bootstrap.saturated} saturated.
         {' '}{result.bootstrap.supportAvailable ? 'Reported support is a resampling proportion, not the probability a split is true.' : 'Split support is unavailable (disabled or at least one bootstrap was saturated).'}</p>
@@ -259,7 +279,7 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
         The split table and TSV use fractions (0–1); unavailable support is omitted, not zero. The arbitrary serialization root has no support label.
         Do not feed that root into dated-tree diagnostics as a biological rooting decision. Independently justified rooting and compatible nonnegative lengths are separate prerequisites.</p>
       <p>Distance and split TSV include method and result identity in # metadata comments.
-        {accepted.pangenome ? ' Reference-backbone FASTA retains all projected columns before complete deletion. The original pangenome JSON retains every input sequence and alignment setting, including excluded insertions.'
+        {accepted.pangenome ? ' Reference-backbone FASTA retains all projected columns before region exclusions and complete deletion. The original pangenome JSON retains every input sequence and alignment setting, including excluded insertions.'
           : ' Original FASTA retains submitted descriptions, gaps and ambiguous columns, including columns excluded from inference.'}
         {' '}These downloads contain private data and are not anonymized.</p>
       <details><summary>Replay this unrooted experiment without a browser</summary>
@@ -303,7 +323,8 @@ bun run phylogeny export --experiment aligned-phylogeny-experiment.json --format
           <button type="button" style={control} disabled={!acceptedRoot || rootChanged || busy || accepted.options.distance === 'p-distance'}
             onClick={() => handoffRoot(onAncestralRoot)}>Use this rooted experiment for ancestral reconstruction</button>
           <p>Carry the exact original alignment and root into conditional reconstruction. Supply the alignment license or permission,
-            then choose the reconstruction model. JC69 or K80 branch lengths are required; no dates or fitted clock branches are used.</p>
+            then choose the reconstruction model. Tree exclusions and source-column mappings stay in the lineage; the ancestral window and gap policy remain separate.
+            JC69 or K80 branch lengths are required; no dates or fitted clock branches are used.</p>
         </div>}
         {acceptedRoot && !rootChanged && <section aria-label="Accepted root hypothesis" data-root-result-id={acceptedRoot.record.resultId}>
           <p><strong>USER-CONDITIONED ROOT — NOT INDEPENDENTLY INFERRED</strong>{accepted.source.kind === 'demo' ? ' · SYNTHETIC INPUT' : ''}</p>
