@@ -221,3 +221,83 @@ export function buildShareUrl(baseUrl: string | URL, state: ShareUrlState): stri
 
   return url.toString();
 }
+
+export interface HistoryView {
+  source: { kind: 'catalog' | 'local'; key: string };
+  view: ParsedShareState;
+}
+
+function historySource(phage: PhageSummary): HistoryView['source'] {
+  if (phage.localGenome) return { kind: 'local', key: phage.localGenome.contentId };
+  return { kind: 'catalog', key: phage.slug?.trim() || phage.accession.trim() };
+}
+
+/** History can outlive a tab. Only the live document maps its random entry keys
+ * to private content identities, loci and view parameters. */
+export class ExplorerBrowserHistory {
+  private readonly privateEntries = new Map<string, HistoryView>();
+  private currentSource: HistoryView['source'] | null = null;
+
+  changedSource(phage: PhageSummary): boolean {
+    const next = historySource(phage);
+    return !this.currentSource || next.kind !== this.currentSource.kind || next.key !== this.currentSource.key;
+  }
+
+  read(location: Pick<Location, 'href'>, state: { phageExplorerPrivateView?: unknown } | null): HistoryView | null {
+    // Traversal has already changed the entry. Canonicalize the result in place.
+    this.currentSource = null;
+    const token = state?.phageExplorerPrivateView;
+    if (typeof token === 'string') return this.privateEntries.get(token) ?? null;
+    const view = parseShareState(location.href);
+    return view.phageKey ? { source: { kind: 'catalog', key: view.phageKey }, view } : null;
+  }
+
+  write(location: Pick<Location, 'href' | 'pathname'>, history: Pick<History, 'state' | 'pushState' | 'replaceState'>,
+    phage: PhageSummary, view: Omit<ShareUrlState, 'phageKey'>): void {
+    const source = historySource(phage);
+    const push = this.currentSource !== null && this.changedSource(phage);
+    const state = { ...history.state };
+    const previousToken = state.phageExplorerPrivateView;
+    let url: string;
+    if (source.kind === 'local') {
+      url = new URL(location.href).origin + location.pathname;
+      const token: string = !push && typeof previousToken === 'string' && this.privateEntries.get(previousToken)?.source.key === source.key
+        ? previousToken : crypto.randomUUID();
+      state.phageExplorerPrivateView = token;
+      this.privateEntries.set(token, { source, view: { ...view, phageKey: null, geneKey: view.geneKey ?? null, tool: view.tool ?? null } });
+      if (this.privateEntries.size > 256) this.privateEntries.delete(this.privateEntries.keys().next().value!);
+    } else {
+      delete state.phageExplorerPrivateView;
+      url = buildShareUrl(location.href, { ...view, phageKey: source.key });
+    }
+
+    if (push) history.pushState(state, '', url);
+    else if (location.href !== url || previousToken !== state.phageExplorerPrivateView) history.replaceState(state, '', url);
+    this.currentSource = source;
+  }
+}
+
+/** A retry of a failed history read still owns the requested view. Any later
+ * selection after a successful read is a fresh user intent, even at the same index. */
+export class HistorySelectionAttempt {
+  private phase: 'starting' | 'loading' | 'failed' | 'retrying' | 'settled';
+
+  constructor(private readonly index: number, needsRead: boolean) {
+    this.phase = needsRead ? 'starting' : 'settled';
+  }
+  get retrying(): boolean { return this.phase === 'retrying'; }
+
+  observe(pending: number | null, accepted: number | null, failed: number | null): boolean {
+    if (pending !== null) {
+      if (pending !== this.index || (this.phase !== 'starting' && this.phase !== 'failed')) return false;
+      this.phase = this.phase === 'failed' ? 'retrying' : 'loading';
+      return true;
+    }
+    if (failed === this.index) {
+      this.phase = 'failed';
+      return true;
+    }
+    this.phase = 'settled';
+    return accepted === this.index;
+  }
+}

@@ -8,7 +8,7 @@ import { ScrollProvider } from './providers';
 import App from './App';
 import { GeneSelectionBridge } from './components/GeneSelectionBridge';
 import { SelectedGeneLifecycleController } from './components/SelectedGeneLifecycleController';
-import { ShareStateController, applyInitialShareState } from './components/ShareStateController';
+import { applyInitialShareState } from './components/ShareStateController';
 import './styles.css';
 import './styles/scroll.css';
 import './styles/phage-picker-accessibility.css';
@@ -176,7 +176,6 @@ if (container) {
                   <App />
                   <GeneSelectionBridge />
                   <SelectedGeneLifecycleController />
-                  <ShareStateController />
                 </>}
               </OverlayProvider>
             </ToastProvider>

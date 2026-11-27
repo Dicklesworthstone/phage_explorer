@@ -74,8 +74,10 @@ test.describe('Shareable explorer state', () => {
     });
 
     await test.step('Push a history entry for a new phage and restore T4 with Back', async () => {
+      const timeOrigin = await page.evaluate(() => performance.timeOrigin);
       await page.keyboard.press('j');
       await expect.poll(() => queryParam(page, 'phage')).not.toBe('t4');
+      const nextEntry = page.url();
       await expect(page.locator('.detail-card').getByRole('heading', { level: 3 })).not.toHaveText('Enterobacteria phage T4');
 
       await page.goBack({ waitUntil: 'domcontentloaded' });
@@ -87,6 +89,11 @@ test.describe('Shareable explorer state', () => {
         'aria-checked',
         'true'
       );
+      expect(await page.evaluate(() => performance.timeOrigin)).toBe(timeOrigin);
+      await page.goForward();
+      await expect(page).toHaveURL(nextEntry);
+      await expect(page.locator('.detail-card').getByRole('heading', { level: 3 })).not.toHaveText('Enterobacteria phage T4');
+      expect(await page.evaluate(() => performance.timeOrigin)).toBe(timeOrigin);
     });
 
     expect(consoleErrors).toEqual([]);

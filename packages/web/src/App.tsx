@@ -22,6 +22,7 @@ import { useExperienceLevelSync, useBlockedHotkeyNotification } from './hooks/us
 import { useDiffReferenceSequence } from './hooks/useDiffReferenceSequence';
 import { PhageSelectionSession } from './hooks/PhageSelectionSession';
 import { BrowserNavigationSession } from './hooks/BrowserNavigationSession';
+import { ShareStateController } from './components/ShareStateController';
 import type { SelectedCdsSource } from '@phage-explorer/core';
 import { SelectedGeneDock } from './components/mobile/SelectedGeneDock';
 import { ActionIds, getOverlayHotkeyActions } from './keyboard/actionRegistry';
@@ -957,18 +958,9 @@ export default function App(): React.ReactElement {
     [shortcutPlatform]
   );
 
-  const documentTitle = currentPhage
-    ? `${currentPhage.name} - Phage Explorer`
-    : 'Phage Explorer';
-
-  useEffect(() => {
-    if (typeof document !== 'undefined') {
-      document.title = documentTitle;
-    }
-  }, [documentTitle]);
-
   return (
     <>
+      <ShareStateController selection={selectionSession} />
       <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {srStatusMessage}
       </div>

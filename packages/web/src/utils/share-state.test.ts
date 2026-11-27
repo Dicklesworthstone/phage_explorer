@@ -2,6 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import type { GeneInfo, PhageSummary } from '@phage-explorer/core';
 import {
   buildShareUrl,
+  ExplorerBrowserHistory,
+  HistorySelectionAttempt,
   findGeneId,
   findPhageIndex,
   getGeneShareKey,
@@ -180,5 +182,81 @@ describe('shareable overlays', () => {
     expect(normalizeShareableOverlayId('RNASTRUCTURE')).toBe('rnaStructure');
     expect(isShareableOverlayId('settings')).toBe(false);
     expect(isShareableOverlayId('welcome')).toBe(false);
+  });
+});
+
+describe('same-document explorer history', () => {
+  it('keeps private views in memory, distinguishes private entries at the same URL, and preserves Forward after traversal', () => {
+    const views = new ExplorerBrowserHistory();
+    const location = new URL('https://example.org/explore') as unknown as Location;
+    const entries: { state: Record<string, unknown>; url: string }[] = [{ state: { app: 1 }, url: location.href }];
+    let index = 0;
+    const history = {
+      get state() { return entries[index].state; },
+      replaceState(state: Record<string, unknown>, _title: string, url: string) {
+        entries[index] = { state, url }; location.href = url;
+      },
+      pushState(state: Record<string, unknown>, _title: string, url: string) {
+        entries.splice(++index, Infinity, { state, url }); location.href = url;
+      },
+    } as unknown as History;
+    const view = { viewMode: 'dual', position: 20, readingFrame: 0, show3DModel: false } as const;
+    const local = { ...phages[0], slug: 'local-secret', accession: 'private-accession',
+      localGenome: { contentId: 'private-digest', sequenceSha256: 'digest', format: 'genbank', topology: 'linear' } } as const;
+    views.write(location, history, phages[0], view);
+    views.write(location, history, local, { ...view, geneKey: 'private-gene' });
+    const plain = 'https://example.org/explore';
+    expect(location.href).toBe(plain);
+    expect(JSON.stringify(history.state)).not.toMatch(/private-accession|private-digest|private-gene|local-secret/);
+    expect(history.state.app).toBe(1);
+    const token = history.state.phageExplorerPrivateView;
+    views.write(location, history, local, { ...view, geneKey: 'new-gene' });
+    expect(history.state.phageExplorerPrivateView).toBe(token);
+    views.write(location, history, { ...local, localGenome: { ...local.localGenome, contentId: 'second-input' } }, view);
+    expect(entries).toHaveLength(3);
+    expect(location.href).toBe(plain);
+    expect(history.state.phageExplorerPrivateView).not.toBe(token);
+    index--;
+    location.href = entries[index].url;
+    const back = views.read(location, history.state);
+    expect(back?.source).toEqual({ kind: 'local', key: 'private-digest' });
+    expect(back?.view.geneKey).toBe('new-gene');
+    views.write(location, history, local, { ...view, geneKey: 'new-gene' });
+    expect(entries).toHaveLength(3);
+    expect(new ExplorerBrowserHistory().read(location, history.state)).toBeNull();
+    index--;
+    location.href = entries[index].url;
+    expect(views.read(location, history.state)?.source).toEqual({ kind: 'catalog', key: 'lambda-phage' });
+    views.write(location, history, phages[0], view);
+    expect(entries).toHaveLength(3);
+  });
+});
+
+describe('history selection ownership', () => {
+  it('retires the history view when a new selection of the same index starts before paint', () => {
+    const attempt = new HistorySelectionAttempt(2, true);
+    expect(attempt.observe(2, 1, null)).toBe(true);
+    expect(attempt.observe(null, 2, null)).toBe(true);
+    expect(attempt.observe(2, 2, null)).toBe(false);
+    expect(new HistorySelectionAttempt(2, false).observe(2, 2, null)).toBe(false);
+  });
+
+  it('preserves a failed destination through retries and stops when another selection supersedes it', () => {
+    const attempt = new HistorySelectionAttempt(2, true);
+    expect(attempt.observe(2, 1, null)).toBe(true);
+    expect(attempt.observe(null, 1, 2)).toBe(true);
+    expect(attempt.observe(2, 1, null)).toBe(true);
+    expect(attempt.retrying).toBe(true);
+    expect(attempt.observe(null, 1, 2)).toBe(true);
+    expect(attempt.observe(2, 1, null)).toBe(true);
+    expect(attempt.observe(null, 2, null)).toBe(true);
+    expect(attempt.retrying).toBe(false);
+    expect(attempt.observe(3, 2, null)).toBe(false);
+  });
+
+  it('retires a cancelled selection even if the destination never returned', () => {
+    const attempt = new HistorySelectionAttempt(2, true);
+    expect(attempt.observe(2, 1, null)).toBe(true);
+    expect(attempt.observe(null, 1, null)).toBe(false);
   });
 });

@@ -419,6 +419,35 @@ test('private GenBank reaches sequence, gene map, analysis and a portable reimpo
   } finally { await finalize(); }
 });
 
+test('preserves private imports across same-URL browser Back and Forward', async ({ page }, info) => {
+  const { pageErrors, finalize } = setupTestHarness(page, info);
+  try {
+    await page.goto('/?phage=lambda&model=0');
+    await expectExplorerIdentity(page, info);
+    const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+    if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+    const overlay = await importPanel(page);
+    await parseInput(overlay, '>HISTORY_ALPHA\nACGTACGT\n>HISTORY_BETA\nGGCCGGCC');
+    await overlay.getByRole('button', { name: 'Add records to explorer' }).click();
+    const selected = page.getByTestId('phage-list-item-selected');
+    await expect(selected).toContainText('HISTORY_ALPHA');
+    await expect.poll(() => new URL(page.url()).search).toBe('');
+    await palette(page, 'HISTORY_BETA');
+    await expect(selected).toContainText('HISTORY_BETA');
+    const timeOrigin = await page.evaluate(() => performance.timeOrigin);
+    await page.goBack();
+    await expect(selected).toContainText('HISTORY_ALPHA');
+    await expect.poll(() => new URL(page.url()).search).toBe('');
+    await page.goForward();
+    await expect(selected).toContainText('HISTORY_BETA');
+    await expect.poll(() => new URL(page.url()).search).toBe('');
+    expect(await page.evaluate(() => performance.timeOrigin)).toBe(timeOrigin);
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await finalize();
+  }
+});
+
 test('palette selection and FASTA export follow the selected local genome with a different diff reference', async ({ page }, info) => {
   const { pageErrors, finalize } = setupTestHarness(page, info);
   try {
