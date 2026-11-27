@@ -218,10 +218,17 @@ fingerprints. Up/Down or Page Up/Page Down scrolls long content. Joined, reverse
 and circular-origin segments use the same extraction as the browser, including
 `codon_start` and the annotated genetic code. Unsupported translation retains
 readable annotated DNA and explains why protein is unavailable. `D`, `P` and `J`
-save complete CDS FASTA, protein FASTA or the JSON record to a new private file;
+save annotated CDS DNA FASTA, protein FASTA or the JSON record to a new private file;
 existing files are never overwritten. `G` returns to that gene in the sequence
 viewer, and Escape returns without changing the sequence view. These exports
 describe the annotated sequence; they do not establish expression or function.
+
+Partial GenBank locations such as `<1..900`, `1..>900`, and joined or reverse-strand
+variants retain their stated DNA spans and explicit biological 5′/3′ completeness
+flags. DNA FASTA headers identify partial fragments; complete-protein predictions,
+whole-gene adaptation scores and coding consequences remain unavailable for them.
+An incomplete internal join cannot supply an exact transcript. Original sources
+and completeness metadata survive bundle and catalog-snapshot exports.
 
 Deployment details:
 - Hosting: Vercel (prod alias: `phage-explorer.org`)

@@ -2,6 +2,7 @@ import type { PhageFull, GeneInfo } from '@phage-explorer/core';
 import {
   translateSequence,
   reverseComplement,
+  hasPartialFeatureBounds,
   analyzeTailFiberStructure,
   analyzeTailFiberSequence,
   type TailFiberStructuralAnalysis,
@@ -83,6 +84,8 @@ function isTailFiberGene(gene: GeneInfo): boolean {
 }
 
 function translateGeneSequence(genome: string, gene: GeneInfo): string {
+  // A deposited fragment is still partial; keep annotation cues without full-protein descriptors.
+  if (hasPartialFeatureBounds(gene)) return '';
   const qualifiers = gene.qualifiers;
   if (typeof qualifiers?.translation === 'string' && qualifiers.translation.trim()) {
     return qualifiers.translation.replace(/\s/g, '').toUpperCase();
@@ -269,7 +272,7 @@ export function analyzeTailFiberTropism(
   options: { demonstration?: boolean } = {}
 ): TropismAnalysis {
   const hits: TailFiberHit[] = [];
-  const translationAssumptions = 'The deposited GenBank protein translation is preferred. Fallback translation uses zero-based, half-open CDS coordinates, annotated strand and codon_start with standard codons (tables 1/11), without alternative initiation rules. Joined CDS, recoding exceptions and other genetic codes require a deposited translation.';
+  const translationAssumptions = 'Incomplete CDS boundaries do not support full-protein descriptors, even when a fragment translation was deposited. The deposited GenBank protein translation is preferred. Fallback translation uses zero-based, half-open CDS coordinates, annotated strand and codon_start with standard codons (tables 1/11), without alternative initiation rules. Joined CDS, recoding exceptions and other genetic codes require a deposited translation.';
 
   // If precomputed predictions supplied, prefer them
   if (precomputed.length > 0) {

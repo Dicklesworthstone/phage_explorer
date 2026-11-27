@@ -34,7 +34,8 @@ export interface GenomeCdsResult {
   };
   rows: Array<{
     id: string; geneId: number; name: string | null; locusTag: string | null; product: string | null;
-    segments: Array<{ start: number; end: number; strand: '+' | '-' }>;
+    segments: Array<{ start: number; end: number; strand: '+' | '-'; partial5Prime?: true; partial3Prime?: true }>;
+    partial5Prime?: true; partial3Prime?: true;
     codonStart: number; geneticCode: number; cds: string | null; protein: string | null;
     cdsSha256: string | null; proteinSha256: string | null;
     extractionReasons: string[]; translationReasons: string[];
@@ -121,6 +122,8 @@ export async function createGenomeCdsExperiment(raw: GenomeInput, settings: Geno
     rows.push({ id: `cds-${identity.contentId}-${gene.id}`, geneId: gene.id,
       name: gene.name, locusTag: gene.locusTag, product: gene.product,
       segments: cds === null ? [] : dna.segments, codonStart: translated.codonStart, geneticCode: translated.geneticCode,
+      ...(dna.partial5Prime ? { partial5Prime: true as const } : {}),
+      ...(dna.partial3Prime ? { partial3Prime: true as const } : {}),
       cds, protein, cdsSha256, proteinSha256, extractionReasons, translationReasons });
     // Permit cancellation and UI updates between bounded chunks, even when a
     // runtime resolves WebCrypto hashes without yielding to its event loop.
@@ -190,6 +193,8 @@ export function exportGenomeCdsFasta(experiment: GenomeCdsExperiment, molecule: 
     append(`>${row.id}|${molecule} accession=${token(result.source.accession)} gene_id=${row.geneId}`
       + ` locus_tag=${token(row.locusTag)} gene=${token(row.name)} product=${token(row.product)}`
       + ` location_1based=${token(location)} codon_start=${row.codonStart} transl_table=${row.geneticCode}`
+      + (row.partial5Prime || row.partial3Prime
+        ? ` partial_5prime=${!!row.partial5Prime} partial_3prime=${!!row.partial3Prime}` : '')
       + ` genome_sha256=${result.source.sequenceSha256} sequence_sha256=${molecule === 'cds' ? row.cdsSha256 : row.proteinSha256}`
       + ` exported=${rows.length} omitted=${result.rows.length - rows.length} result_id=${record.resultId}`);
     const sequence = row[molecule]!;

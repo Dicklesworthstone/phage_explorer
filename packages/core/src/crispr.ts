@@ -49,6 +49,7 @@
 
 import type { GeneInfo } from './types';
 import { translateSequence, reverseComplement } from './codons';
+import { hasPartialFeatureBounds } from './genome-import';
 
 /** One real CRISPR spacer, with enough provenance for a user to look it up. */
 export interface SpacerRecord {
@@ -161,6 +162,7 @@ function predictAcrCandidates(genes: GeneInfo[], fullSequence: string): AcrCandi
   const candidates: AcrCandidate[] = [];
 
   for (const gene of genes) {
+    if (hasPartialFeatureBounds(gene)) continue;
     const geneSeq = fullSequence.slice(gene.startPos, gene.endPos);
     const seqForTranslation = gene.strand === '-' ? reverseComplement(geneSeq) : geneSeq;
     const protein = translateSequence(seqForTranslation);

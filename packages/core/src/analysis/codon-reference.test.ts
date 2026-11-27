@@ -132,6 +132,16 @@ describe('reference experiments from original annotations', () => {
     const replay = await replayReferenceCodonExperiment(serializeAnalysisRecord(result.record));
     assert.deepEqual(replay, result);
   });
+  it('reports incomplete imported boundaries instead of scoring a full gene from an exact-length fragment', async () => {
+    const source = joinedGenBank.replace('complement(join(1..3,8..11))', 'complement(join(1..3,8..>11))');
+    const imported = (await importLocalGenomes({ name: 'partial.gb', text: source })).genomes[0];
+    const result = await createReferenceCodonExperiment(referenceGenomeFromPhage(imported.phage), imported.sequence, json(), { geneIds: [1] });
+    assert.equal(result.analysis.genes[0].cai, null);
+    assert.equal(result.analysis.summary.scoredGenes, 0);
+    assert.equal(result.analysis.summary.totalGenes, 1);
+    assert.match(result.analysis.genes[0].reasons.join(' '), /Incomplete CDS boundaries/);
+    assert.deepEqual(await replayReferenceCodonExperiment(serializeAnalysisRecord(result.record)), result);
+  });
   it('selects one CDS explicitly and rejects a missing or non-coding selection', async () => {
     const { genome, sequence } = await input();
     const result = await createReferenceCodonExperiment(genome, sequence, json(), { geneIds: [1] });

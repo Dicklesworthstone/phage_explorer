@@ -1,5 +1,6 @@
 import type { GeneInfo, AminoAcid } from './types';
 import { translateSequence, reverseComplement } from './codons';
+import { hasPartialFeatureBounds } from './genome-import';
 
 // Lightweight structural fragility heuristics for capsid/tail proteins.
 // Intent: provide fast, no-dependency scoring to highlight fragile regions and
@@ -96,6 +97,7 @@ export function analyzeStructuralConstraints(
   const proteins: ProteinConstraint[] = [];
 
   for (const gene of genes) {
+    if (hasPartialFeatureBounds(gene)) continue;
     const role = classifyRole(gene);
     if (role === 'other') continue; // focus on structural genes
     const start = Math.max(0, gene.startPos);

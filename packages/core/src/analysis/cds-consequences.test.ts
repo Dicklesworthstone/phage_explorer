@@ -188,8 +188,13 @@ describe('alignment-conditional coding consequences', () => {
     const partial = await run('ATGAAATA', 'ATGAAATA');
     assert.match(partial.genes[0].reasons.join(' '), /complete terminal codons/);
     const warnings = await run(r, r, genbank(r, ['1..9', '<1..9']));
-    assert.equal(warnings.genes.length, 1);
-    assert(warnings.reference.warnings.some(w => w.includes('Unsupported feature location')));
+    assert.equal(warnings.genes.length, 2);
+    assert.equal(warnings.genes[1].cds, r);
+    assert.equal(warnings.genes[1].partial5Prime, true);
+    assert.equal(warnings.genes[1].protein, null);
+    assert.equal(warnings.consequences[1].status, 'unavailable');
+    assert.deepEqual(warnings.consequences[1].effects, []);
+    assert(warnings.reference.warnings.some(w => w.includes('partial feature boundaries')));
   });
   it('refuses mismatched references and ambiguous accessions; records the selected annotation content', async () => {
     const r = 'ATGAAATAA', source = genbank(r);

@@ -6,7 +6,7 @@
  */
 
 import { getGeneticCode, isSupportedGeneticCode, reverseComplement } from '../codons';
-import { getGeneMapSegments, parseLocalFeatureLocation } from '../genome-import';
+import { getGeneMapSegments, hasPartialFeatureBounds, parseLocalFeatureLocation } from '../genome-import';
 import type { GeneInfo } from '../types';
 
 export const GENE_START_LOGO_WINDOW = { upstream: 20, downstream: 10 } as const;
@@ -57,6 +57,7 @@ export function buildGeneStartAlignment(genome: string, genes: readonly GeneInfo
     const q = gene.qualifiers ?? {};
     const codonStart = q.codon_start === undefined ? 1 : q.codon_start;
     if (codonStart !== 1 && (typeof codonStart !== 'string' || codonStart.trim() !== '1')) { exclude('partial-start'); continue; }
+    if (hasPartialFeatureBounds(gene)) { exclude('unsupported-annotation'); continue; }
     if (['pseudo', 'pseudogene', 'partial', 'exception', 'transl_except', 'ribosomal_slippage', 'trans_splicing', 'artificial_location']
       .some(key => Object.hasOwn(q, key))) { exclude('unsupported-annotation'); continue; }
     const table = q.transl_table === undefined ? 1 : q.transl_table;

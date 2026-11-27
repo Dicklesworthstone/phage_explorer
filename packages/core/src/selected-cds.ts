@@ -26,6 +26,8 @@ export interface SelectedCdsResult {
   segments: CdsReference['segments'];
   codonStart: number;
   geneticCode: number;
+  partial5Prime?: true;
+  partial3Prime?: true;
   cds: string | null;
   protein: string | null;
   cdsSha256: string | null;
@@ -75,6 +77,8 @@ export async function prepareSelectedCds(source: SelectedCdsSource, selected: Ge
     source: { ...identity, genomeSha256 }, gene,
     segments: cds === null ? [] : extracted.segments,
     codonStart: translated.codonStart, geneticCode: translated.geneticCode,
+    ...(extracted.partial5Prime ? { partial5Prime: true as const } : {}),
+    ...(extracted.partial3Prime ? { partial3Prime: true as const } : {}),
     cds, protein, cdsSha256, proteinSha256, extractionReasons, translationReasons,
   };
   const resultId = await sha256(JSON.stringify(analysisJson(content)));
@@ -99,6 +103,8 @@ export function selectedCdsExport(result: SelectedCdsResult, kind: SelectedCdsEx
     + ` gene_id=${result.gene.id} source=${result.source.kind} genome_sha256=${result.source.genomeSha256}`
     + ` sequence_sha256=${kind === 'cds' ? result.cdsSha256 : result.proteinSha256}`
     + ` location_1based=${token(selectedCdsLocation(result))} codon_start=${result.codonStart} transl_table=${result.geneticCode}`
+    + (result.partial5Prime || result.partial3Prime
+      ? ` partial_5prime=${!!result.partial5Prime} partial_3prime=${!!result.partial3Prime}` : '')
     + ` translation=${result.protein === null ? 'unavailable' : 'available'} result_id=${result.resultId}`;
   const lines = [`>${header}`];
   for (let index = 0; index < sequence.length; index += 80) lines.push(sequence.slice(index, index + 80));

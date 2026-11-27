@@ -59,6 +59,20 @@ const makeGene = (
 });
 
 describe('analyzeCRISPRPressure', () => {
+  test('does not screen incomplete CDS fragments as complete small acidic proteins', () => {
+    const sequence = 'GAT'.repeat(80); // Complete control: 80 aspartate residues.
+    const complete = makeGene('hypothetical protein', 0, sequence.length);
+    for (const qualifiers of [
+      { _location: '1..>240' },
+      { _location: 'complement(<1..240)' },
+      { _segments: [{ start: 0, end: 240, strand: '+', partial5Prime: true }] },
+    ]) {
+      const partial = { ...makeGene('hypothetical protein', 0, sequence.length), qualifiers };
+      const result = analyzeCRISPRPressure(sequence, [complete, partial]);
+      expect(result.acrCandidates.map(candidate => candidate.geneId)).toEqual([complete.id]);
+    }
+  });
+
   describe('result structure', () => {
     test('returns complete result structure', () => {
       const result = analyzeCRISPRPressure(SEQ_WITH_SPACERS, []);

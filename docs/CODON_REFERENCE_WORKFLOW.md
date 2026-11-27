@@ -65,7 +65,7 @@ Every codon in a scored family must have a reported count, including reassigned 
 
 Joined segments, reverse strands, circular-origin joins and `codon_start` use the shared CDS extractor. Query annotations must have the reference's codon meanings: tables 1 and 11 are compatible for this score; tables 4, 15 and 25 require the same explicit annotation. An absent `transl_table` remains table 1 and never inherits a recoded reference's table. The original initiation triplet is retained; this method does not estimate initiation efficiency.
 
-Ambiguous triplets, partial terminal codons, internal stops under the declared table, pseudogenes, unsupported recoding or incomplete reference coverage prevent a full gene score. The pooled value is codon-weighted over fully scorable CDS only, with its denominator displayed. The illustrative built-in host profiles retain their existing standard-code scope.
+Ambiguous triplets, incomplete annotated CDS boundaries, partial terminal codons, internal stops under the declared table, pseudogenes, unsupported recoding or incomplete reference coverage prevent a full gene score. The pooled value is codon-weighted over fully scorable CDS only, with its denominator displayed. The illustrative built-in host profiles retain their existing standard-code scope.
 
 Standard-code count-only and source-backed records keep method versions 1 and 2. Reassigned-code equivalents use versions 3 and 4 and are recomputed from the saved inputs during replay. These code-aware extensions are sequence scores; their support for a translation table does not establish biological calibration.
 

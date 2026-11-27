@@ -10,7 +10,7 @@
 
 import { countCodonUsage, CODON_TABLE, reverseComplement, type GeneticCode } from '../codons';
 import type { GeneInfo, PhageFull } from '../types';
-import { getGeneMapSegments } from '../genome-import';
+import { getGeneMapSegments, hasPartialFeatureBounds } from '../genome-import';
 import { analysisJson, createAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 
 export interface HostProfile {
@@ -521,7 +521,7 @@ export function extractGeneSequence(
   genomeSequence?: string | null,
   supportedCodes: readonly GeneticCode[] = [1, 11]
 ): string {
-  if (!genomeSequence || genomeSequence.length === 0) {
+  if (!genomeSequence || genomeSequence.length === 0 || hasPartialFeatureBounds(gene)) {
     return '';
   }
   const geneticCode = String(gene.qualifiers?.transl_table ?? 1);

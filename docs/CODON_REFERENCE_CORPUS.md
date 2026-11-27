@@ -148,7 +148,7 @@ Choose the explicit table in the browser or with `--genetic-code`.
 Under the feature-table convention,
 absent `transl_table` means 1; the builder does not silently override that annotation
 with the user-entered code. A conflicting table, unresolved coding base, internal
-stop, incomplete codon, unsupported recoding/pseudogene qualifier, or inconsistent
+stop, incomplete annotated CDS boundary or codon, unsupported recoding/pseudogene qualifier, or inconsistent
 deposited translation excludes the **entire** CDS. Such exclusion fails a strict
 build. Repeated CDS qualifiers require source correction even with exclusion enabled,
 because parser warnings cannot reliably assign them to one mapped feature.

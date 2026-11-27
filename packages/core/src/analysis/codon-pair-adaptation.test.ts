@@ -297,3 +297,19 @@ describe('Codon & Codon-Pair Adaptation Lens - Core', () => {
     });
   });
 });
+
+describe('partial annotated CDS cannot supply whole-gene adaptation', () => {
+  it('excludes strand-aware imported fragments while keeping complete joined CDS available', async () => {
+    const sequence = 'ATGAAACCCCCCGGGTTT';
+    const locations = ['join(1..6,13..18)', 'join(<1..6,13..18)', 'complement(join(1..6,13..>18))'];
+    const text = 'LOCUS       PARTIAL 18 bp DNA linear\nFEATURES             Location/Qualifiers\n'
+      + locations.map(location => '     CDS             ' + location + '\n').join('')
+      + 'ORIGIN\n        1 ' + sequence.toLowerCase() + '\n//\n';
+    const genome = (await importLocalGenomes({ name: 'partial.gb', text })).genomes[0];
+    expect(extractGeneSequence(genome.phage.genes[0], sequence)).toBe('ATGAAAGGGTTT');
+    expect(extractGeneSequence(genome.phage.genes[1], sequence)).toBe('');
+    expect(extractGeneSequence(genome.phage.genes[2], sequence)).toBe('');
+    const result = analyzePhageHostCodonAdaptation(genome.phage, { genomeSequence: sequence });
+    expect(result.genes.map(gene => gene.geneId)).toEqual([genome.phage.genes[0].id]);
+  });
+});

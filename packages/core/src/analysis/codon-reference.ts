@@ -8,7 +8,7 @@
 import { getGeneticCode, isSupportedGeneticCode, type GeneticCode } from '../codons';
 import { codonCorpusMethod, replayCodonReferenceCorpus, type CodonReferenceCorpus } from './codon-reference-corpus';
 import { extractGeneSequence } from './codon-pair-adaptation';
-import { getGeneMapSegments } from '../genome-import';
+import { getGeneMapSegments, hasPartialFeatureBounds } from '../genome-import';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 import type { GeneInfo, PhageFull } from '../types';
 
@@ -208,6 +208,7 @@ function analyze(genome: ReferenceCodonGenome, sequence: string, reference: Codo
   const genes = selected.map((gene): ReferenceCodonGene => {
     let reason: string | null = null;
     const qualifiers = gene.qualifiers ?? {};
+    if (hasPartialFeatureBounds(gene)) reason = 'Incomplete CDS boundaries do not support a full gene codon-adaptation score.';
     if (Object.hasOwn(qualifiers, 'pseudo') || Object.hasOwn(qualifiers, 'pseudogene')) reason = 'Pseudogene annotations are not scored.';
     if (qualifiers.transl_except || qualifiers.exception) reason = 'Translation exceptions require a supported recoding model.';
     if (!standardMeanings(reference.geneticCode) && ['transl_except', 'exception', 'ribosomal_slippage', 'trans_splicing', 'artificial_location']

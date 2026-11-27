@@ -88,7 +88,7 @@ describe('source-derived codon reference corpus', () => {
     await assert.rejects(createCodonReferenceCorpus(input('>query\nATGAAATAA'), metadata), /GenBank CDS/);
   });
   it('separates parser-unmapped annotations from counted and excluded mapped CDS', async () => {
-    const source = input(gb('ATGAAATAA', ['1..9', '<1..9']));
+    const source = input(gb('ATGAAATAA', ['1..9', 'REMOTE.1:1..9']));
     await assert.rejects(createCodonReferenceCorpus(source, metadata), /unmapped CDS/);
     const result = await createCodonReferenceCorpus(source, { ...metadata, unavailable: 'exclude' });
     assert.equal(result.summary.unmappedCds, 1); assert.equal(result.summary.selectedMappedCds, 1);
@@ -96,6 +96,19 @@ describe('source-derived codon reference corpus', () => {
     assert.equal((await createCodonReferenceCorpus(source, { ...metadata, geneIds: [1] })).summary.codons, 3);
     const repeated = input(gb('ATGAAATAA', undefined, ['                     /codon_start=1\n                     /codon_start=2\n']));
     await assert.rejects(createCodonReferenceCorpus(repeated, { ...metadata, unavailable: 'exclude' }), /Repeated CDS qualifiers/);
+  });
+  it('keeps partial CDS as mapped exclusions and never counts a fragment as a complete reference gene', async () => {
+    const source = input(gb('ATGAAATAAATGAAATAA', ['1..9', '<10..18']));
+    await assert.rejects(createCodonReferenceCorpus(source, metadata), /cannot be counted/);
+    const result = await createCodonReferenceCorpus(source, { ...metadata, unavailable: 'exclude' });
+    assert.equal(result.summary.unmappedCds, 0);
+    assert.equal(result.summary.selectedMappedCds, 2);
+    assert.equal(result.summary.countedCds, 1);
+    assert.equal(result.summary.excludedMappedCds, 1);
+    assert.deepEqual(nonzero(result.reference.counts), { AAA: 1, ATG: 1, TAA: 1 });
+    assert.equal(result.genes[1].status, 'excluded');
+    assert.match(result.genes[1].reasons.join(' '), /incomplete 5-prime boundary/);
+    assert.deepEqual(await replayCodonReferenceCorpus(serializeAnalysisRecord(result.record)), result);
   });
   it('prevents duplicated annotations from inflating counts without collapsing distinct identical loci', async () => {
     const source = input(gb('ATGAAATAAATGAAATAA', ['1..9', '1..9', '10..18']));

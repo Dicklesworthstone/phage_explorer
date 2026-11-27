@@ -331,6 +331,23 @@ describe('analyzeTailFiberTropism', () => {
     expect(result.sequenceAnalysis).toBeNull();
   });
 
+  test.each([
+    { _location: '<1..9' },
+    { _location: 'complement(1..>9)' },
+    { _segments: [{ start: 0, end: 9, strand: '+', partial3Prime: true }] },
+    { _segments: [{ start: 0, end: 9, strand: '+', partial5Prime: 'false' }] },
+    { partial: '' },
+  ])('keeps partial protein translations out of full-protein tropism descriptors %p', partial => {
+    const gene = { ...makeGene('LamB-specific tail fiber', 0, 9), qualifiers: { translation: 'MKR', ...partial } };
+    for (const predictions of [[], [{ geneId: gene.id, locusTag: gene.locusTag, receptor: 'LamB', confidence: 0.7 }]]) {
+      const result = analyzeTailFiberTropism(makePhage([gene]), 'ATGAAAAGA', predictions);
+      expect(result.hits).toHaveLength(1);
+      expect(result.sequenceAnalysis).toBeNull();
+      expect(result.sequenceSource).toBeNull();
+      expect(result.structuralAnalysis).toBeNull();
+    }
+  });
+
   test('applies codon_start after orienting the CDS', () => {
     const gene = { ...makeGene('tail fiber', 0, 10), qualifiers: { codon_start: '2', transl_table: '11' } };
     expect(analyzeTailFiberTropism(makePhage([gene]), 'CATGAAAAGA').sequenceAnalysis?.sequence).toBe('MKR');

@@ -4,7 +4,7 @@
  * These descriptive sequence consequences are not functional/pathogenicity predictions.
  */
 import { getGeneticCode, isSupportedGeneticCode, reverseComplement, SUPPORTED_GENETIC_CODES, translateSequence, type GeneticCode } from '../codons';
-import { getGeneMapSegments, importLocalGenomes, type GenomeInput } from '../genome-import';
+import { getGeneMapSegments, hasPartialFeatureBounds, importLocalGenomes, parseLocalFeatureLocation, type GenomeInput } from '../genome-import';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 import type { GeneInfo } from '../types';
 
@@ -23,10 +23,11 @@ export interface CdsConsequenceOptions {
 }
 export type CdsEffect = 'unchanged' | 'synonymous' | 'amino-acid-change' | 'inframe-indel' |
   'frameshift' | 'frame-restored' | 'premature-stop' | 'terminal-stop-lost' | 'start-codon-lost' | 'cds-deleted';
-interface Segment { start: number; end: number; strand: '+' | '-' }
+interface Segment { start: number; end: number; strand: '+' | '-'; partial5Prime?: true; partial3Prime?: true }
 export interface CdsReference {
   geneId: number; name: string; product: string | null; geneticCode: number; codonStart: number;
   segments: Segment[]; cds: string | null; protein: string | null; reasons: string[];
+  partial5Prime?: true; partial3Prime?: true;
 }
 export interface CdsConsequence {
   geneId: number; sequenceId: string; status: 'available' | 'unavailable'; effects: CdsEffect[]; reasons: string[];
@@ -99,6 +100,8 @@ function protein(cds: string, code: number, initiation: boolean): string {
 }
 export interface CdsReferenceDna {
   codonStart: number;
+  partial5Prime?: true;
+  partial3Prime?: true;
   segments: CdsReference['segments'];
   cds: string | null;
   reasons: string[];
@@ -111,7 +114,19 @@ export function extractCdsReferenceDna(gene: GeneInfo, genome: string): CdsRefer
   const q = gene.qualifiers ?? {}, reasons: string[] = [];
   const start = Number(q.codon_start ?? 1);
   const codonStart = Number.isSafeInteger(start) ? start : 0;
-  const raw = getGeneMapSegments(gene);
+  let raw = getGeneMapSegments(gene);
+  // Catalog annotations may retain the original partial location without the
+  // segment flags added by the local importer. Verify geometry before using it.
+  if (typeof q._location === 'string' && /[<>]/.test(q._location)) {
+    try {
+      const located = parseLocalFeatureLocation(q._location, genome.length);
+      if (located.length !== raw.length || located.some((s, i) => s.start !== raw[i].start || s.end !== raw[i].end || s.strand !== raw[i].strand
+        || raw[i].partial5Prime !== undefined && raw[i].partial5Prime !== s.partial5Prime
+        || raw[i].partial3Prime !== undefined && raw[i].partial3Prime !== s.partial3Prime)) {
+        reasons.push('Partial CDS location does not match the mapped segments.');
+      } else raw = located;
+    } catch { reasons.push('Unsupported partial CDS location.'); }
+  }
   if (![1, 2, 3].includes(codonStart)) reasons.push('Unsupported codon_start.');
   if (q._segments !== undefined && !Array.isArray(q._segments)
     || typeof q._location === 'string' && /\b(?:join|order)\s*\(/i.test(q._location) && !Array.isArray(q._segments)) {
@@ -122,17 +137,29 @@ export function extractCdsReferenceDna(gene: GeneInfo, genome: string): CdsRefer
     || raw.some(s => !Number.isSafeInteger(s.start) || !Number.isSafeInteger(s.end) || s.start < 0 || s.end > genome.length
       || s.start >= s.end || !['+', '-'].includes(s.strand ?? '') || s.strand !== raw[0].strand)
     || sorted.some((s, i) => i > 0 && s.start < sorted[i - 1].end)) reasons.push('Unsupported mixed, overlapping or out-of-bounds CDS segments.');
-  const base: CdsReferenceDna = { codonStart, segments: [], cds: null, reasons };
+  if (raw.some((s, i) => s.partial5Prime && i > 0 || s.partial3Prime && i < raw.length - 1)) {
+    reasons.push('Partial internal CDS boundaries prevent exact transcript reconstruction.');
+  }
+  const partialEnds = { ...(raw[0]?.partial5Prime ? { partial5Prime: true as const } : {}),
+    ...(raw[raw.length - 1]?.partial3Prime ? { partial3Prime: true as const } : {}) };
+  const base: CdsReferenceDna = { codonStart, ...partialEnds, segments: [], cds: null, reasons };
   if (reasons.length) return base;
   // codon_start is measured in REFERENCE transcript coordinates, not query bases.
   let skip = codonStart - 1;
   for (const part of raw) {
     const remove = Math.min(skip, part.end - part.start); skip -= remove;
     const segment: Segment = { start: part.start + (part.strand === '+' ? remove : 0),
-      end: part.end - (part.strand === '-' ? remove : 0), strand: part.strand as '+' | '-' };
+      end: part.end - (part.strand === '-' ? remove : 0), strand: part.strand as '+' | '-',
+      ...(part.partial5Prime ? { partial5Prime: true as const } : {}),
+      ...(part.partial3Prime ? { partial3Prime: true as const } : {}) };
     if (segment.start < segment.end) base.segments.push(segment);
   }
   base.cds = base.segments.map(s => s.strand === '+' ? genome.slice(s.start, s.end) : reverseComplement(genome.slice(s.start, s.end))).join('');
+  if (base.partial5Prime) reasons.push('Reference CDS has an incomplete 5-prime boundary; DNA contains only the annotated fragment.');
+  if (base.partial3Prime) reasons.push('Reference CDS has an incomplete 3-prime boundary; DNA contains only the annotated fragment.');
+  if (!base.partial5Prime && !base.partial3Prime && hasPartialFeatureBounds(gene)) {
+    reasons.push('Reference CDS completeness is unspecified by a partial annotation; a complete protein is unavailable.');
+  }
   if (!base.cds || base.cds.length % 3) reasons.push('Reference CDS lacks complete terminal codons.');
   if (/[^ACGT]/.test(base.cds)) reasons.push('Reference CDS contains unresolved bases.');
   return base;
@@ -153,7 +180,9 @@ export function reconstructCdsReference(gene: GeneInfo, genome: string,
   }
   if (dna.cds === null) reasons.push(...dna.reasons.filter(reason => reason !== 'Unsupported codon_start.'));
   const base: CdsReference = { geneId: gene.id, name: gene.locusTag ?? gene.name ?? `CDS ${gene.id}`,
-    product: gene.product, geneticCode, codonStart, segments: [], cds: null, protein: null, reasons };
+    product: gene.product, geneticCode, codonStart, segments: [], cds: null, protein: null, reasons,
+    ...(dna.partial5Prime ? { partial5Prime: true as const } : {}),
+    ...(dna.partial3Prime ? { partial3Prime: true as const } : {}) };
   if (reasons.length) return base;
   base.segments = dna.segments;
   base.cds = dna.cds!;

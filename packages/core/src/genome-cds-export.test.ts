@@ -7,6 +7,8 @@ import {
 } from './genome-cds-export';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } from './analysis-result';
 import { exportCatalogGenomeSnapshot, importLocalGenomes } from './genome-import';
+import { prepareSelectedCds, selectedCdsExport } from './selected-cds';
+import { extractCdsReferenceDna } from './analysis/cds-consequences';
 
 function genbank(sequence: string, features: Array<{ location: string; qualifiers?: string }>, accession = 'PRIVATE') {
   return { name: 'private.gb', text: `LOCUS       ${accession} ${sequence.length} bp DNA circular\nACCESSION   ${accession}\nFEATURES             Location/Qualifiers\n`
@@ -47,6 +49,72 @@ describe('whole-genome annotated CDS and proteome export', () => {
     assert.ok(dna[0].header.includes(`result_id=${experiment.record.resultId}`));
     assert.deepEqual(experiment.record.inputs[0].data, source);
     assert.deepEqual(await replayGenomeCdsExperiment(serializeAnalysisRecord(experiment.record)), experiment);
+  });
+
+  it('exports observed partial CDS DNA with strand-correct completeness and no fabricated complete protein', async () => {
+    for (const [sequence, location, five, three] of [
+      ['ATGAAATAA', '<1..9', true, false],
+      ['ATGAAATAA', '1..>9', false, true],
+      ['TTATTTCAT', 'complement(<1..9)', false, true],
+      ['TTATTTCAT', 'complement(1..>9)', true, false],
+      ['ATGAAACCTAA', 'join(<1..6,9..>11)', true, true],
+      ['TTAGGTTTCAT', 'complement(join(<1..3,6..>11))', true, true],
+    ] as const) {
+      const source = genbank(sequence, [{ location }]);
+      const experiment = await createGenomeCdsExperiment(source);
+      const row = experiment.result.rows[0];
+      assert.equal(row.cds, 'ATGAAATAA', location);
+      assert.equal(!!row.partial5Prime, five, location);
+      assert.equal(!!row.partial3Prime, three, location);
+      assert.equal(row.protein, null); assert.equal(row.proteinSha256, null);
+      assert.deepEqual(row.extractionReasons, []);
+      assert.match(row.translationReasons.join(' '), /incomplete .*boundary/);
+      assert.deepEqual(experiment.result.summary, {
+        mappedCds: 1, selectedCds: 1, cdsAvailable: 1, proteinsAvailable: 0, cdsUnavailable: 0, proteinsUnavailable: 1,
+      });
+      const [fasta] = readFasta(exportGenomeCdsFasta(experiment, 'cds'));
+      assert.equal(fasta.sequence, 'ATGAAATAA');
+      assert.ok(fasta.header.includes('partial_5prime=' + five + ' partial_3prime=' + three));
+      assert.throws(() => exportGenomeCdsFasta(experiment, 'protein'), /No supported protein/);
+      assert.deepEqual(await replayGenomeCdsExperiment(serializeAnalysisRecord(experiment.record)), experiment);
+
+      const genome = (await importLocalGenomes(source)).genomes[0];
+      const selected = await prepareSelectedCds({ owner: {}, phage: genome.phage, sequence: genome.sequence }, genome.phage.genes[0]);
+      assert.equal(selected.cds, 'ATGAAATAA');
+      assert.equal(!!selected.partial5Prime, five); assert.equal(!!selected.partial3Prime, three);
+      assert.equal(selectedCdsExport(selected, 'protein'), null);
+      assert.ok(selectedCdsExport(selected, 'cds')!.content.includes('partial_5prime=' + five + ' partial_3prime=' + three));
+    }
+  });
+
+  it('retains partial-end evidence after codon_start removes the entire first segment', async () => {
+    const experiment = await createGenomeCdsExperiment(genbank('ACCATGAAATAA', [
+      { location: 'join(<1..1,4..12)', qualifiers: '                     /codon_start=2\n' },
+    ]));
+    const row = experiment.result.rows[0];
+    assert.equal(row.cds, 'ATGAAATAA');
+    assert.deepEqual(row.segments, [{ start: 3, end: 12, strand: '+' }]);
+    assert.equal(row.partial5Prime, true);
+    assert.equal(row.protein, null);
+    assert.match(exportGenomeCdsFasta(experiment, 'cds'), /partial_5prime=true partial_3prime=false/);
+  });
+
+  it('refuses unknown internal joins and conflicting partial annotation without dropping the feature row', async () => {
+    for (const location of ['join(1..>6,9..11)', 'join(1..6,<9..11)', 'complement(join(1..>6,9..11))']) {
+      const experiment = await createGenomeCdsExperiment(genbank('ATGAAACCTAA', [{ location }]));
+      const row = experiment.result.rows[0];
+      assert.equal(row.cds, null); assert.equal(row.protein, null);
+      assert.match(row.extractionReasons.join(' '), /Partial internal CDS boundaries/);
+      assert.equal(experiment.result.summary.cdsUnavailable, 1);
+    }
+    const genome = (await importLocalGenomes(genbank('ATGAAATAA', [{ location: '<1..9' }]))).genomes[0];
+    const gene = genome.phage.genes[0];
+    const legacy = { ...gene, qualifiers: { _location: '<1..9' } };
+    const recovered = extractCdsReferenceDna(legacy, genome.sequence);
+    assert.equal(recovered.cds, genome.sequence); assert.equal(recovered.partial5Prime, true);
+    const contradictory = { ...gene, qualifiers: { _location: '1..>9',
+      _segments: [{ start: 0, end: 9, strand: '+', partial5Prime: true }] } };
+    assert.equal(extractCdsReferenceDna(contradictory, genome.sequence).cds, null);
   });
 
   it('applies codon_start once across joins and uses explicit initiators and recoded genetic tables', async () => {

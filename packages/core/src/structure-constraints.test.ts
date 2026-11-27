@@ -14,6 +14,19 @@ const makeGene = (start: number, end: number, strand: '+' | '-'): GeneInfo => ({
 });
 
 describe('analyzeStructuralConstraints', () => {
+  test('does not infer a full structural protein from a partial coding fragment', () => {
+    const sequence = 'ATGGCTGCTGGTTAA';
+    for (const qualifiers of [
+      { _location: '<1..15' },
+      { _location: 'complement(1..>15)' },
+      { _segments: [{ start: 0, end: 15, strand: '+', partial3Prime: true }] },
+      { partial: '' },
+    ]) {
+      const gene = { ...makeGene(0, sequence.length, '+'), qualifiers };
+      expect(analyzeStructuralConstraints(sequence, [gene]).proteins).toEqual([]);
+    }
+  });
+
   test('scores structural genes on forward strand', () => {
     // Simple capsid-like ORF: ATG GCT GCT GGT TAA -> MAAG*
     const seq = 'ATGGCTGCTGGTTAA';

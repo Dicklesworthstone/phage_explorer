@@ -110,13 +110,20 @@ code 1. Codon meanings and initiators follow the
 | 25 | TGA → glycine (G) | TTG, ATG, GTG |
 
 An allowed initiator becomes methionine only at the annotated beginning of a
-complete CDS. Internal codons and partial CDS with `codon_start=2` or `3` retain
-their elongation meanings. Start/stop consequences and deposited-translation
+complete CDS. Internal codons and annotations with a `codon_start=2` or `3` frame
+offset retain their elongation meanings. Start/stop consequences and deposited-translation
 validation use that same declared table. Joined/reverse-strand CDS and codon_start
 are honored. Standalone CDS records use method version 2 for the additional tables;
-existing code-1/11 records retain version 1 and their previous result identities.
+existing complete code-1/11 records retain version 1 and their previous result identities.
 Replaying an older unavailable result never silently upgrades it to new evidence.
 The separate reference-codon/CAI corpus remains restricted to codes 1 and 11.
+
+Explicit `<` and `>` partial-location boundaries are separate from the frame
+offset: they preserve the observed DNA with strand-aware 5′/3′ completeness flags,
+but do not support a complete protein or coding-consequence result. Partial flags
+survive complements, joins and exports. Unknown internal junctions prevent exact
+transcript reconstruction. Older saved results with changed annotation coverage
+must be recomputed; replay does not silently accept the new coverage.
 
 Reference pseudogenes, translation exceptions, unsupported segments,
 incomplete reference codons and internal reference stops remain unavailable.

@@ -140,22 +140,38 @@ function catalogMappedGenes(record: ParsedRecord): GeneInfo[] {
   });
 }
 
+/** Whole-gene/protein consumers must not reinterpret an observed fragment as a
+ * complete feature. Merely present malformed segment flags are also unusable;
+ * getGeneMapSegments separately rejects their values instead of coercing them.
+ */
+export function hasPartialFeatureBounds(gene: Pick<GeneInfo, 'qualifiers'>): boolean {
+  const q = gene.qualifiers;
+  if (!q) return false;
+  return Object.hasOwn(q, 'partial') || Object.hasOwn(q, '_partial') && q._partial !== false
+    || typeof q._location === 'string' && /[<>]/.test(q._location)
+    || Array.isArray(q._segments) && q._segments.some(segment => !!segment && typeof segment === 'object'
+      && (Object.hasOwn(segment, 'partial5Prime') || Object.hasOwn(segment, 'partial3Prime')));
+}
+
 /** Preserve transcript segments so neither frontend paints an intron or circular-origin gap as CDS. */
-export function getGeneMapSegments(gene: GeneInfo): { start: number; end: number; strand: GeneInfo['strand'] }[] {
+export function getGeneMapSegments(gene: GeneInfo): { start: number; end: number; strand: GeneInfo['strand']; partial5Prime?: true; partial3Prime?: true }[] {
   const segments = gene.qualifiers?._segments;
   if (Array.isArray(segments)) {
-    return segments.filter((segment): segment is { start: number; end: number; strand: '+' | '-' } => {
+    return segments.filter((segment): segment is Segment => {
       if (!segment || typeof segment !== 'object') return false;
       const value = segment as Record<string, unknown>;
       return typeof value.start === 'number' && Number.isSafeInteger(value.start) && value.start >= 0 &&
         typeof value.end === 'number' && Number.isSafeInteger(value.end) && value.end > value.start &&
-        (value.strand === '+' || value.strand === '-');
+        (value.strand === '+' || value.strand === '-') &&
+        (value.partial5Prime === undefined || value.partial5Prime === true) &&
+        (value.partial3Prime === undefined || value.partial3Prime === true);
     });
   }
   return [{ start: Math.min(gene.startPos, gene.endPos), end: Math.max(gene.startPos, gene.endPos), strand: gene.strand }];
 }
 
-interface Segment { start: number; end: number; strand: '+' | '-' }
+/** Completeness follows the biological strand, not increasing genomic coordinates. */
+interface Segment { start: number; end: number; strand: '+' | '-'; partial5Prime?: true; partial3Prime?: true }
 interface Feature { type: string; location: string; qualifiers: Record<string, string>; segments?: Segment[] }
 interface ParsedRecord {
   name: string; accession: string; sequence: string; topology: 'linear' | 'circular' | 'unknown';
@@ -165,15 +181,19 @@ interface ParsedRecord {
 
 /** INSDC locations are 1-based inclusive; internal intervals are 0-based half-open.
  * https://www.insdc.org/submitting-standards/feature-table/ section 3.4.
- * Remote, uncertain, between-base and order() locations are retained as unsupported
- * annotations, never approximated into a coding interval.
+ * Canonical <start..end / start..>end spans retain the stated bases and explicit
+ * biological partial-end flags; the missing extent is never inferred. Remote,
+ * uncertain single-base, between-base and order() locations remain unsupported.
  */
 export function parseLocalFeatureLocation(location: string, length: number, depth = 0): Segment[] {
   if (depth > 16) throw new Error('Feature location nesting exceeds 16 levels');
   const text = location.replace(/\s/g, '');
   if (text.startsWith('complement(') && text.endsWith(')')) {
     return parseLocalFeatureLocation(text.slice(11, -1), length, depth + 1)
-      .reverse().map(segment => ({ ...segment, strand: segment.strand === '+' ? '-' : '+' }));
+      .reverse().map(segment => ({ start: segment.start, end: segment.end, strand: segment.strand === '+' ? '-' : '+',
+        ...(segment.partial3Prime ? { partial5Prime: true as const } : {}),
+        ...(segment.partial5Prime ? { partial3Prime: true as const } : {}),
+      }));
   }
   if (text.startsWith('join(') && text.endsWith(')')) {
     const parts: string[] = [];
@@ -196,14 +216,17 @@ export function parseLocalFeatureLocation(location: string, length: number, dept
     }
     return segments;
   }
-  const match = /^(\d+)(?:\.\.(\d+))?$/.exec(text);
-  if (!match) throw new Error(`Unsupported feature location: ${text.slice(0, 100)}`);
-  const start = Number(match[1]);
-  const end = Number(match[2] ?? match[1]);
+  const match = /^(<)?(\d+)(?:\.\.(>)?(\d+))?$/.exec(text);
+  if (!match || match[1] && !match[4]) throw new Error(`Unsupported feature location: ${text.slice(0, 100)}`);
+  const start = Number(match[2]);
+  const end = Number(match[4] ?? match[2]);
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start || end > length) {
     throw new Error(`Feature interval ${text} is outside the ${length}-base record`);
   }
-  return [{ start: start - 1, end, strand: '+' }];
+  return [{ start: start - 1, end, strand: '+',
+    ...(match[1] ? { partial5Prime: true as const } : {}),
+    ...(match[3] ? { partial3Prime: true as const } : {}),
+  }];
 }
 
 function validateSequence(sequence: string, accession: string): string {
@@ -290,7 +313,12 @@ function parseGenbankRecord(raw: string, inputName: string): ParsedRecord {
   }
   if (quoted) throw new Error(`${accession}: unterminated quoted qualifier`);
   for (const item of features) {
-    try { item.segments = parseLocalFeatureLocation(item.location, sequence.length); }
+    try {
+      item.segments = parseLocalFeatureLocation(item.location, sequence.length);
+      if (item.segments.some(segment => segment.partial5Prime || segment.partial3Prime)) {
+        warnings.push(`${item.type} ${item.location}: partial feature boundaries; only stated sequence spans are mapped. Missing bases and complete proteins are not inferred.`);
+      }
+    }
     catch (error) { warnings.push(`${item.type} ${item.location}: ${error instanceof Error ? error.message : 'unsupported location'}; excluded from the gene map, retained in source.`); }
   }
   const definitionIndex = lines.findIndex(line => /^DEFINITION\s/.test(line));
@@ -393,7 +421,7 @@ export async function importLocalGenomes(input: GenomeInput, onProgress?: (compl
         type: feature.type, product: feature.qualifiers.product ?? null,
         startPos: Math.min(...segments.map(segment => segment.start)), endPos: Math.max(...segments.map(segment => segment.end)),
         strand: strands.size === 1 ? segments[0].strand : null,
-        qualifiers: { ...feature.qualifiers, _location: feature.location, ...(segments.length > 1 ? { _segments: segments } : {}) },
+        qualifiers: { ...feature.qualifiers, _location: feature.location, ...(segments.length > 1 || segments.some(segment => segment.partial5Prime || segment.partial3Prime) ? { _segments: segments } : {}) },
       };
     });
     let known = 0;

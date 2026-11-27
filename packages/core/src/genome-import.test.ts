@@ -51,6 +51,51 @@ describe('private genome import', () => {
     expect(parseLocalFeatureLocation('join(19..24,1..6)', 24)).toEqual([{ start: 18, end: 24, strand: '+' }, { start: 0, end: 6, strand: '+' }]);
   });
 
+  test('INSDC partial spans preserve biological end flags through complements and joins', () => {
+    // INSDC 3.4.3: <345..500 states known covered bases, never an invented upstream endpoint.
+    expect(parseLocalFeatureLocation('<345..500', 1000)).toEqual([
+      { start: 344, end: 500, strand: '+', partial5Prime: true },
+    ]);
+    expect(parseLocalFeatureLocation('1..>888', 1000)).toEqual([
+      { start: 0, end: 888, strand: '+', partial3Prime: true },
+    ]);
+    expect(parseLocalFeatureLocation('complement(<1..9)', 24)).toEqual([
+      { start: 0, end: 9, strand: '-', partial3Prime: true },
+    ]);
+    expect(parseLocalFeatureLocation('complement(1..>9)', 24)).toEqual([
+      { start: 0, end: 9, strand: '-', partial5Prime: true },
+    ]);
+    const expected: ReturnType<typeof parseLocalFeatureLocation> = [
+      { start: 18, end: 24, strand: '-', partial5Prime: true },
+      { start: 0, end: 6, strand: '-', partial3Prime: true },
+    ];
+    expect(parseLocalFeatureLocation('complement(join(<1..6,19..>24))', 24)).toEqual(expected);
+    expect(parseLocalFeatureLocation('join(complement(19..>24),complement(<1..6))', 24)).toEqual(expected);
+    expect(parseLocalFeatureLocation('complement(complement(<1..9))', 24)).toEqual([
+      { start: 0, end: 9, strand: '+', partial5Prime: true },
+    ]);
+  });
+
+  test('imports partial features with their exact source, completeness and portable segment metadata', async () => {
+    const input = { name: 'partial.gb', text: genbank.replace('complement(join(1..6,', 'complement(join(<1..6,')
+      .replace('     CDS             7..18', '     CDS             7..>18') };
+    const first = await importLocalGenomes(input);
+    const [reverse, forward] = first.genomes[0].phage.genes;
+    expect(getGeneMapSegments(reverse)).toEqual([
+      { start: 18, end: 24, strand: '-' }, { start: 0, end: 6, strand: '-', partial3Prime: true },
+    ]);
+    expect(getGeneMapSegments(forward)).toEqual([
+      { start: 6, end: 18, strand: '+', partial3Prime: true },
+    ]);
+    expect(reverse.qualifiers?._location).toBe('complement(join(<1..6,19..24))');
+    expect(first.genomes[0].original).toEqual(input);
+    expect(first.genomes[0].warnings.join(' ')).toContain('partial feature boundaries');
+    expect(await importLocalGenomes({ name: 'portable.json', text: exportLocalGenomeBundle(first.genomes) })).toEqual(first);
+    // Only literal true is valid: hostile saved flags cannot be treated as truthy completeness metadata.
+    const invalid = { ...forward, qualifiers: { _segments: [{ start: 6, end: 18, strand: '+', partial3Prime: 'false' }] } };
+    expect(getGeneMapSegments(invalid)).toEqual([]);
+  });
+
   test('GenBank retains complement/join coordinates, multiline qualifiers and unsupported original annotations', async () => {
     const { genomes } = await importLocalGenomes({ name: 'record.gb', text: genbank });
     const genome = genomes[0];
@@ -107,7 +152,7 @@ describe('private genome import', () => {
   });
 
   test('uncertain, remote, reversed, out-of-bounds and between-base locations never become CDS intervals', () => {
-    for (const location of ['<1..10', 'R1.1:1..10', '10..1', '0..10', '1..25', '10^11', 'order(1..3,5..9)', 'join(1..2)', 'join(1..2,3..4))']) {
+    for (const location of ['<1', '>1..10', '1..<10', '(1.3)..10', 'R1.1:1..10', '10..1', '0..10', '1..25', '1..>25', '10^11', 'order(1..3,5..9)', 'join(1..2)', 'join(1..2,3..4))']) {
       expect(() => parseLocalFeatureLocation(location, 24)).toThrow();
     }
   });
@@ -174,6 +219,29 @@ describe('catalog genome session snapshots', () => {
     // The source snapshot is already canonical; no production hashing helper is reused.
     const ordered = canonical(JSON.parse(input.text));
     expect(genome.phage.localGenome!.contentId).toBe(createHash('sha256').update(JSON.stringify(ordered)).digest('hex'));
+  });
+
+  test('catalog snapshots retain partial-end segment metadata and exclude malformed flags', async () => {
+    const catalog = source();
+    catalog.genes = [catalog.genes[0]];
+    catalog.genes[0].qualifiers!._location = 'complement(join(1..6,13..>18))';
+    catalog.genes[0].qualifiers!._segments = [
+      { start: 12, end: 18, strand: '-', partial5Prime: true },
+      { start: 0, end: 6, strand: '-' },
+    ];
+    const input = await exportCatalogGenomeSnapshot(catalog, sequence);
+    const imported = await importLocalGenomes(input);
+    expect(imported.genomes[0].phage.genes).toEqual(catalog.genes);
+    expect(getGeneMapSegments(imported.genomes[0].phage.genes[0])[0].partial5Prime).toBe(true);
+    expect(await importLocalGenomes({ name: 'saved.json', text: exportLocalGenomeBundle(imported.genomes) })).toEqual(imported);
+    const malformed = JSON.parse(input.text) as CatalogGenomeSnapshot;
+    malformed.genome.genes[0].qualifiers!._segments = [
+      { start: 12, end: 18, strand: '-', partial5Prime: 'true' },
+      { start: 0, end: 6, strand: '-' },
+    ];
+    const rejected = await importLocalGenomes({ name: 'malformed.json', text: JSON.stringify(malformed) });
+    expect(rejected.genomes[0].phage.genes).toEqual([]);
+    expect(rejected.genomes[0].warnings.join(' ')).toContain('unsupported or split segment annotation');
   });
 
   test('mixed bundles restore exact source snapshots and selection without catalog access', async () => {
