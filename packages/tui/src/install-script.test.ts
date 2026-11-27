@@ -227,6 +227,30 @@ function runPrepared(prepared: ReturnType<typeof prepareInstall>): Run {
   };
 }
 
+/** Model a tagged checkout and compilation. Use real Bun for manifest parsing. */
+function provideTaggedSource(prepared: ReturnType<typeof prepareInstall>, manifest: unknown) {
+  const data = join(prepared.tmp, 'checkout/packages/web/public');
+  mkdirSync(data, { recursive: true });
+  writeFileSync(join(data, 'phage.db'), GOOD_DB);
+  writeFileSync(join(data, 'phage.db.manifest.json'), JSON.stringify(manifest));
+  writeFileSync(join(prepared.tmp, 'built-binary'), GOOD_BINARY);
+
+  const wrappers = join(prepared.tmp, 'source-tools');
+  mkdirSync(wrappers);
+  writeFileSync(join(wrappers, 'git'), `#!${SHELL}
+[[ "$1" == clone && "$4" == --branch && "$5" == "$VERSION" ]] || exit 1
+cp -R "$TMPDIR/checkout/." "$7"
+`, { mode: 0o755 });
+  writeFileSync(join(wrappers, 'bun'), `#!${SHELL}
+case "$1" in
+  install) exit 0 ;;
+  run) [[ "$2" == build ]] && mkdir -p dist && cp "$TMPDIR/built-binary" dist/phage-explorer ;;
+  *) exec "${process.execPath}" "$@" ;;
+esac
+`, { mode: 0o755 });
+  prepared.env.PATH = wrappers + ':' + prepared.env.PATH;
+}
+
 function runInstaller(release: Release, opts: InstallOptions = {}): Run {
   return runPrepared(prepareInstall(release, opts));
 }
@@ -298,6 +322,46 @@ exec "${Bun.which('mv')}" "$@"
     expect(run.code).not.toBe(0);
     expect(run.stdout).toContain('Updating the unmodified release catalog');
     expectUnchanged(run);
+  });
+
+  test.each(['explicit', 'fallback'])('a tagged %s source build upgrades a known old catalog', (mode) => {
+    const prepared = prepareReleasedCatalog({ binary: GOOD_BINARY, db: GOOD_DB },
+      { args: mode === 'explicit' ? ['--from-source'] : [] });
+    if (mode === 'fallback') {
+      const asset = join(prepared.tmp, '../release', ASSET);
+      renameSync(asset, asset + '.unavailable');
+    }
+    provideTaggedSource(prepared, { sha256: sha256(GOOD_DB) });
+    const run = runPrepared(prepared);
+    expect(run.code).toBe(0);
+    expect(run.stdout).toContain('Updating the unmodified release catalog');
+    expect(installedBinary(run)).toEqual(Buffer.from(GOOD_BINARY));
+    expect(installedDb(run)).toEqual(Buffer.from(GOOD_DB));
+    expect(leftovers(run)).toEqual([]);
+  });
+
+  test('a corrupt source catalog aborts before replacing either installed file', () => {
+    const prepared = prepareReleasedCatalog({ binary: GOOD_BINARY, db: GOOD_DB }, { args: ['--from-source'] });
+    provideTaggedSource(prepared, { sha256: sha256(flipped(GOOD_DB)) });
+    const run = runPrepared(prepared);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('Checksum mismatch');
+    expectUnchanged(run);
+  });
+
+  test('source upgrades preserve custom catalogs and require a top-level target checksum', () => {
+    const release = { binary: GOOD_BINARY, db: GOOD_DB };
+    const custom = prepareInstall(release, { previous: true, databaseMode: 'default', args: ['--from-source'] });
+    const missingSum = prepareReleasedCatalog(release, { args: ['--from-source'] });
+    provideTaggedSource(custom, { sha256: sha256(GOOD_DB) });
+    provideTaggedSource(missingSum, { artifacts: { gzip: { sha256: sha256(GOOD_DB) } } });
+    for (const prepared of [custom, missingSum]) {
+      const run = runPrepared(prepared);
+      expect(run.code).toBe(0);
+      expect(installedBinary(run)).toEqual(Buffer.from(GOOD_BINARY));
+      expect(installedDb(run)).toEqual(Buffer.from(OLD_DB));
+      if (prepared === custom) expect(run.stderr).toContain('differs from the catalog shipped');
+    }
   });
 
   test('a pinned downgrade and a release missing its database checksum both preserve a known catalog', () => {

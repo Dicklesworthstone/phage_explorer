@@ -546,11 +546,21 @@ standalone_catalog() {
 
 AUTO_PREVIOUS_SHA=""
 EXPECTED_DB=""
+source_catalog_sha256() {
+  # Source builds already require Bun. Read the top-level raw database checksum,
+  # even when the descriptor also contains checksums for compressed artifacts.
+  bun -e '
+    const manifest = await Bun.file(process.argv[1]).json();
+    if (typeof manifest.sha256 !== "string" || !/^[0-9a-f]{64}$/i.test(manifest.sha256)) process.exit(1);
+    console.log(manifest.sha256.toLowerCase());
+  ' "$TMP_DIR/packages/web/public/phage.db.manifest.json" 2>/dev/null
+}
+
 select_existing_catalog() {
   local actual
   DATABASE_MODE=keep
-  [[ $FROM_SOURCE -eq 0 && -n "$VERSION" && $SKIP_CHECKSUMS -eq 0 ]] || return 0
-  EXPECTED_DB="$(release_sha256 phage.db)"
+  [[ -n "$VERSION" && $SKIP_CHECKSUMS -eq 0 ]] || return 0
+  if [[ $FROM_SOURCE -eq 0 ]]; then EXPECTED_DB="$(release_sha256 phage.db)"; fi
   [[ -n "$EXPECTED_DB" ]] || return 0
   actual="$(sha256_of "$DB_PATH")" || return 0
   [[ "$actual" != "$EXPECTED_DB" ]] || return 0
@@ -615,6 +625,9 @@ if [[ $FROM_SOURCE -eq 1 ]]; then
     die "Cannot stage the built binary; $NOT_CHANGED"
   fi
   log_success "Binary built from source"
+  if [[ "$DATABASE_MODE" != skip && $SKIP_CHECKSUMS -eq 0 ]]; then
+    EXPECTED_DB="$(source_catalog_sha256)" || EXPECTED_DB=""
+  fi
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -643,13 +656,7 @@ elif [[ "$DATABASE_MODE" != skip ]]; then
   if [[ $FROM_SOURCE -eq 1 ]]; then
     # The repository ships the release database together with its manifest.
     SRC_DB="$TMP_DIR/packages/web/public/phage.db"
-    SRC_MANIFEST="$TMP_DIR/packages/web/public/phage.db.manifest.json"
     [[ -f "$SRC_DB" ]] || die "The source tree has no packages/web/public/phage.db; $NOT_CHANGED"
-    EXPECTED_DB=""
-    if [[ $SKIP_CHECKSUMS -eq 0 ]]; then
-      EXPECTED_DB="$(sed -nE 's/^[[:space:]]*"sha256"[[:space:]]*:[[:space:]]*"([0-9a-fA-F]{64})".*/\1/p' "$SRC_MANIFEST" 2>/dev/null \
-        | head -n 1 | tr '[:upper:]' '[:lower:]')"
-    fi
     cp "$SRC_DB" "$STAGED_DB" || die "Cannot stage the database; $NOT_CHANGED"
     verify_sha256 "$STAGED_DB" "$EXPECTED_DB" "phage.db (source tree, per phage.db.manifest.json)" \
       || die "Refusing to install the database; $NOT_CHANGED"

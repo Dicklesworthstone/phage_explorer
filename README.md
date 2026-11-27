@@ -129,8 +129,10 @@ phage-explorer
 
 Rerun the one-liner to upgrade. The installer checks the existing catalog against
 published release checksums and updates an unmodified older release catalog
-alongside the binary. It keeps custom catalogs and catalogs with SQLite
-journals. Use `--without-database` for a binary-only upgrade or
+alongside the binary. A build from a release tag applies the same upgrade rule
+using the raw database checksum in that tag’s manifest. This includes the
+automatic fallback when a binary download is unavailable. The installer keeps
+custom catalogs and catalogs with SQLite journals. Use `--without-database` for a binary-only upgrade or
 `--with-database` to explicitly replace the catalog.
 
 On current `main`, `phage-explorer --catalog-info` prints the resolved SQLite path,
