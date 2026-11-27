@@ -13,6 +13,7 @@
  * GitHub release instead.
  */
 import { describe, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -413,6 +414,42 @@ exec "${Bun.which('cp')}" "$@"
     expect(run.code).toBe(0);
     expect(installedDb(run)).toEqual(Buffer.from(OLD_DB));
     expect(readFileSync(journal, 'utf8')).toBe('pending local updates');
+  });
+
+  test('an explicit replacement preserves committed WAL data until the writer closes', () => {
+    const prepared = prepareInstall({ binary: GOOD_BINARY, db: GOOD_DB }, { previous: true });
+    const catalog = join(prepared.home, '.phage-explorer', 'phage.db');
+    writeFileSync(catalog, '');
+    const writer = new Database(catalog);
+    try {
+      writer.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE notes(body TEXT); INSERT INTO notes VALUES ('saved locally')");
+      const before = [catalog, catalog + '-wal', catalog + '-shm'].map(path => readFileSync(path));
+      const run = runPrepared(prepared);
+      expect(run.code).not.toBe(0);
+      expect(run.stderr).toContain('SQLite');
+      expect(installedBinary(run)).toEqual(Buffer.from(OLD_BINARY));
+      expect([catalog, catalog + '-wal', catalog + '-shm'].map(path => readFileSync(path))).toEqual(before);
+      expect(writer.query('SELECT body FROM notes').get()).toEqual({ body: 'saved locally' });
+      expect(leftovers(run)).toEqual([]);
+    } finally { writer.close(); }
+    const retry = runPrepared(prepared);
+    expect(retry.code).toBe(0);
+    expect(installedDb(retry)).toEqual(Buffer.from(GOOD_DB));
+  });
+
+  test.each(['-wal', '-shm', '-journal'])('a first install preserves an orphaned SQLite %s sidecar', suffix => {
+    const prepared = prepareInstall({ binary: GOOD_BINARY, db: GOOD_DB }, { databaseMode: 'default' });
+    const data = join(prepared.home, '.phage-explorer');
+    mkdirSync(data);
+    const sidecar = join(data, 'phage.db' + suffix);
+    symlinkSync(join(data, 'missing'), sidecar);
+    const run = runPrepared(prepared);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('SQLite');
+    expect(lstatSync(sidecar).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(data, 'phage.db'))).toBe(false);
+    expect(existsSync(join(run.dest, 'phage-explorer'))).toBe(false);
+    expect(leftovers(run)).toEqual([]);
   });
 
   test('a default upgrade over a different catalog keeps it, warns and names the replacing command', () => {

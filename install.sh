@@ -534,14 +534,17 @@ catalog_predates_release() {
   }'
 }
 
-# A symlink may be intentional, and a SQLite sidecar may hold local writes
-# that are not represented in the main file's checksum.
-standalone_catalog() {
+# SQLite can keep committed data or rollback state outside the main file.
+catalog_has_sidecars() {
   local suffix
-  [[ -f "$DB_PATH" && ! -L "$DB_PATH" ]] || return 1
   for suffix in -wal -shm -journal; do
-    [[ ! -e "$DB_PATH$suffix" && ! -L "$DB_PATH$suffix" ]] || return 1
+    if [[ -e "$DB_PATH$suffix" || -L "$DB_PATH$suffix" ]]; then return 0; fi
   done
+  return 1
+}
+
+standalone_catalog() {
+  [[ -f "$DB_PATH" && ! -L "$DB_PATH" ]] && ! catalog_has_sidecars
 }
 
 AUTO_PREVIOUS_SHA=""
@@ -720,6 +723,12 @@ if [[ -n "$STAGED_DB" ]]; then
       || [[ "$(sha256_of "$DB_BACKUP")" != "$AUTO_PREVIOUS_SHA" || "$(sha256_of "$DB_PATH")" != "$AUTO_PREVIOUS_SHA" ]]; then
       die "The existing catalog changed during the upgrade; $NOT_CHANGED"
     fi
+  fi
+  # An explicit replacement authorizes replacing the catalog, but a backup of
+  # its main file cannot restore live SQLite state. Orphaned journals also make
+  # it unsafe to install new database pages at a previously empty path.
+  if catalog_has_sidecars; then
+    die "SQLite journal files exist beside $DB_PATH. Close applications using the catalog and let SQLite finish recovery before retrying, or use --without-database for a binary-only upgrade; $NOT_CHANGED"
   fi
   COMMITTING_PAIR=1
   if [[ "$DATABASE_MODE" == missing ]]; then

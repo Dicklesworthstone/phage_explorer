@@ -133,7 +133,8 @@ alongside the binary. A build from a release tag applies the same upgrade rule
 using the raw database checksum in that tag’s manifest. This includes the
 automatic fallback when a binary download is unavailable. The installer keeps
 custom catalogs and catalogs with SQLite journals. Use `--without-database` for a binary-only upgrade or
-`--with-database` to explicitly replace the catalog.
+`--with-database` to explicitly replace a closed catalog. If SQLite journal files are present,
+close applications using the catalog and let SQLite finish recovery before retrying.
 
 On current `main`, `phage-explorer --catalog-info` prints the resolved SQLite path,
 logical content version, phage count, and gene count as JSON. Detailed terminal help
@@ -427,10 +428,9 @@ curl -fsSL .../install.sh | bash -s -- --without-database
 curl -fsSL .../install.sh | bash -s -- --easy-mode
 ```
 
-A fresh install includes the catalog. Running the installer again keeps an existing
-`~/.phage-explorer/phage.db` unless you request `--with-database`.
-When the kept catalog differs from the one the release ships, the installer says so and
-prints the `--with-database` command that replaces it.
+A fresh install includes the catalog. On upgrade, the installer also replaces an
+unmodified catalog from a known older release when it can verify the new bytes.
+It preserves custom catalogs and warns when their checksum differs from the release.
 The installer verifies the binary and any downloaded database against the release's
 `sha256.txt` (using `sha256sum`, `shasum` or `openssl`) before it replaces
 anything. A missing or mismatched checksum, a missing hash tool, or a failed
