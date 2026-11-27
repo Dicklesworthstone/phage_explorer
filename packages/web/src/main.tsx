@@ -16,6 +16,7 @@ import './styles/selected-gene-dock.css';
 import './styles/selected-gene-desktop.css';
 import { queryClient } from './queryClient';
 import { initializeStorePersistence } from './store';
+import { initializeWebTheme } from './hooks/useTheme';
 
 // This private workspace does not need the catalog database or selection bridge.
 const HostMetabolismPanel = lazy(() => import('./components/overlays/HostMetabolismPanel').then(module => ({ default: module.HostMetabolismPanel })));
@@ -135,6 +136,7 @@ function installViewportVariables(): () => void {
 
 const cleanupViewportVariables = installViewportVariables();
 const cleanupStorePersistence = initializeStorePersistence();
+const cleanupWebTheme = initializeWebTheme();
 applyInitialShareState();
 
 let didCleanup = false;
@@ -142,6 +144,7 @@ const cleanupAll = () => {
   if (didCleanup) return;
   didCleanup = true;
   cleanupStorePersistence();
+  cleanupWebTheme();
   cleanupViewportVariables();
 };
 

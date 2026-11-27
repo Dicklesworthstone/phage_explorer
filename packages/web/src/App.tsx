@@ -190,7 +190,6 @@ export default function App(): React.ReactElement {
   const toggleDiff = usePhageStore((s) => s.toggleDiff);
   const isLoadingPhage = usePhageStore((s) => s.isLoadingPhage);
   const setPhages = usePhageStore((s) => s.setPhages);
-  const storeSetTheme = usePhageStore((s) => s.setTheme);
   const storeCloseOverlay = usePhageStore((s) => s.closeOverlay);
   const show3DModel = usePhageStore((s) => s.show3DModel);
   const toggle3DModel = usePhageStore((s) => s.toggle3DModel);
@@ -509,10 +508,6 @@ export default function App(): React.ReactElement {
     welcomeOpenedRef.current = true;
     openOverlayCtx('welcome');
   }, [hasSeenWelcome, localWorkspaceRequested, openOverlayCtx, webPrefsHydrated]);
-
-  useEffect(() => {
-    storeSetTheme(theme.id);
-  }, [storeSetTheme, theme.id]);
 
   const currentPhageName = currentPhage?.name ?? null;
 

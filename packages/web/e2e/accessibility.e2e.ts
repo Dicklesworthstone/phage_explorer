@@ -74,6 +74,41 @@ test('mobile catalog entry points isolate keyboard focus and restore the selecte
 
 const RESEARCH_THEMES = ['holographic', 'cyberpunk', 'classic', 'ocean', 'matrix', 'sunset', 'forest', 'monochrome'];
 
+test('theme changes reach mounted views, the command palette and the next visit', async ({ page }) => {
+  await setExperienceLevel(page, 'power');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/?phage=lambda&model=0');
+  const canvas = page.locator('canvas.sequence-grid-canvas');
+  await expect(canvas).toBeVisible();
+  const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+  if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+
+  await page.keyboard.press('Control+,');
+  const selector = page.getByRole('combobox', { name: 'Select theme' });
+  await selector.selectOption('ocean');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'ocean');
+  await expect(canvas).toHaveCSS('background-color', 'rgb(10, 22, 40)');
+  await page.keyboard.press('Escape');
+  await expect(selector).toBeHidden();
+
+  await page.keyboard.press('t');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'matrix');
+  await expect(canvas).toHaveCSS('background-color', 'rgb(0, 0, 0)');
+  await page.keyboard.press('Control+k');
+  const input = page.getByTestId('command-palette-input');
+  await input.fill('Matrix');
+  await expect(page.getByRole('option', { name: /Theme: Matrix \(current\)/i })).toBeVisible();
+  await input.fill('Sunset');
+  await page.getByRole('option', { name: /Theme: Sunset/i }).click();
+  await expect(canvas).toHaveCSS('background-color', 'rgb(30, 30, 47)');
+
+  await page.reload();
+  await expect(canvas).toHaveCSS('background-color', 'rgb(30, 30, 47)');
+  await page.keyboard.press('Control+,');
+  await expect(selector).toHaveValue('sunset');
+});
+
 for (const theme of RESEARCH_THEMES) {
   test(`catalog audit: ${theme} mobile and desktop`, async ({ page }, info) => {
     const { pageErrors, consoleErrors, finalize } = setupTestHarness(page, info);

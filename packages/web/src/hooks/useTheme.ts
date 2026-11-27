@@ -5,9 +5,10 @@
  * and CSS custom property updates.
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import type { Theme, ThemeContextValue, ThemeId } from '../theme/types';
-import { THEMES, DEFAULT_THEME, getThemeById, getNextTheme } from '../theme/themes';
+import { useMemo } from 'react';
+import { usePhageStore } from '@phage-explorer/state';
+import type { Theme, ThemeContextValue } from '../theme/types';
+import { THEMES, getThemeById, getNextTheme } from '../theme/themes';
 
 const STORAGE_KEY = 'phage-explorer-theme';
 const TRANSITION_CLASS = 'theme-transitioning';
@@ -117,26 +118,35 @@ function applyThemeToDocument(theme: Theme, animate = true): void {
 }
 
 /**
- * Get initial theme from localStorage or system preference
+ * Keep document styles and the persisted web preference in sync with the
+ * same theme ID the explorer, controls and canvases subscribe to.
  */
-function getInitialTheme(): Theme {
-  // Check localStorage first
-  if (typeof window !== 'undefined') {
+export function initializeWebTheme(): () => void {
+  // Older sessions may have a more recent Settings choice here than in the
+  // main store's debounced preferences. Prefer it when present.
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) usePhageStore.getState().setTheme(stored);
+  } catch {
+    // The in-memory choice remains usable when storage is unavailable.
+  }
+
+  applyThemeToDocument(getThemeById(usePhageStore.getState().currentTheme.id), false);
+  return usePhageStore.subscribe((state, previous) => {
+    if (state.currentTheme.id === previous.currentTheme.id) return;
+    const theme = getThemeById(state.currentTheme.id);
+    applyThemeToDocument(theme);
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        return getThemeById(stored);
-      }
+      localStorage.setItem(STORAGE_KEY, theme.id);
     } catch {
       // Ignore storage failures (private mode, quota, disabled storage).
     }
+  });
+}
 
-    // Check system preference for light/dark
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    return prefersDark ? DEFAULT_THEME : getThemeById('pastel');
-  }
-
-  return DEFAULT_THEME;
+function cycleNextTheme(): void {
+  const state = usePhageStore.getState();
+  state.setTheme(getNextTheme(state.currentTheme.id).id);
 }
 
 /**
@@ -154,50 +164,18 @@ function getInitialTheme(): Theme {
  * nextTheme();
  */
 export function useTheme(): ThemeContextValue {
-  const [theme, setThemeState] = useState<Theme>(getInitialTheme);
-
-  // Apply theme on mount and when theme changes
-  useEffect(() => {
-    applyThemeToDocument(theme, false);
-  }, []);
-
-  // Set theme by ID
-  const setTheme = useCallback((id: string) => {
-    const newTheme = getThemeById(id);
-    setThemeState(newTheme);
-    applyThemeToDocument(newTheme, true);
-    try {
-      localStorage.setItem(STORAGE_KEY, id);
-    } catch {
-      // Ignore storage failures (private mode, quota, disabled storage).
-    }
-  }, []);
-
-  // Cycle to next theme
-  const cycleNextTheme = useCallback(() => {
-    const newTheme = getNextTheme(theme.id);
-    setThemeState(newTheme);
-    applyThemeToDocument(newTheme, true);
-    try {
-      localStorage.setItem(STORAGE_KEY, newTheme.id);
-    } catch {
-      // Ignore storage failures (private mode, quota, disabled storage).
-    }
-  }, [theme.id]);
-
-  // Memoized context value
-  const contextValue = useMemo<ThemeContextValue>(
+  const theme = usePhageStore(state => getThemeById(state.currentTheme.id));
+  const setTheme = usePhageStore(state => state.setTheme);
+  return useMemo<ThemeContextValue>(
     () => ({
       theme,
-      themeId: theme.id as ThemeId,
+      themeId: theme.id,
       setTheme,
       nextTheme: cycleNextTheme,
       availableThemes: THEMES,
     }),
-    [theme, setTheme, cycleNextTheme]
+    [theme, setTheme]
   );
-
-  return contextValue;
 }
 
 /**
