@@ -100,6 +100,10 @@ registerRoute(
     cacheName: CACHE_NAMES.database,
     matchOptions: { ignoreSearch: false },
     plugins: [
+      // A checksum repair or explicit refresh must reach the origin even when
+      // an earlier HTTP 200 put incorrect bytes under this exact URL.
+      { cachedResponseWillBeUsed: async ({ request, cachedResponse }) =>
+        request.cache === 'reload' ? null : cachedResponse },
       new ExpirationPlugin({
         maxEntries: 2, // Current + one backup
         maxAgeSeconds: 30 * 24 * 60 * 60, // 30 days

@@ -24,6 +24,8 @@ export interface ArtifactStoreOptions {
   startupCatalogs?: () => Promise<Array<{ manifestUrl: string; catalog: DataArtifact }>>;
   cacheBudget?: number;
 }
+class ArtifactIntegrityError extends Error {}
+
 export type ArtifactAvailability = 'available' | 'missing' | 'corrupt' | 'unavailable';
 export interface OfflineArtifactSelection {
   version: 1;
@@ -111,7 +113,7 @@ export async function readBoundedResponse(response: Response, maximum: number, s
       const { done, value } = await wait(reader.read(), signal);
       if (done) break;
       length += value.byteLength;
-      if (length > maximum) throw new Error('Dataset response exceeds its declared byte budget.');
+      if (length > maximum) throw new ArtifactIntegrityError('Dataset response exceeds its declared byte budget.');
       chunks.push(value);
     }
   } catch (error) {
@@ -171,7 +173,7 @@ export class VerifiedArtifactStore {
   private assertOpen(): void { if (this.closed) throw new Error('Dataset loader is closed.'); }
   private async verified(response: Response, item: DataArtifact, signal = this.controller.signal): Promise<Uint8Array> {
     const bytes = await readBoundedResponse(response, item.bytes, signal);
-    if (bytes.length !== item.bytes || await wait(sha256Bytes(bytes), signal) !== item.sha256) throw new Error(`Dataset integrity check failed for ${item.path}.`);
+    if (bytes.length !== item.bytes || await wait(sha256Bytes(bytes), signal) !== item.sha256) throw new ArtifactIntegrityError(`Dataset integrity check failed for ${item.path}.`);
     this.assertOpen(); cancelled(signal);
     return bytes;
   }
@@ -351,10 +353,22 @@ export class VerifiedArtifactStore {
           } catch { this.assertOpen(); /* A corrupt entry will be replaced only by verified bytes. */ }
         }
       }
-      this.requests++;
       const signal = AbortSignal.any([this.controller.signal, AbortSignal.timeout(60_000)]);
-      const response = await wait(this.fetcher(url, { signal, cache: forceDownload ? 'reload' : 'default' }), signal);
-      const data = await this.verified(response, item, signal);
+      const download = async (mode: 'default' | 'reload') => {
+        this.requests++;
+        const response = await wait(this.fetcher(url, { signal, cache: mode }), signal);
+        return this.verified(response, item, signal);
+      };
+      let data: Uint8Array;
+      try {
+        data = await download(forceDownload ? 'reload' : 'default');
+      } catch (error) {
+        if (forceDownload || !(error instanceof ArtifactIntegrityError)) throw error;
+        // A stale HTTP cache entry can outlive the corrected origin response.
+        // Reuse the same immutable descriptor, deadline and byte limit.
+        cancelled(signal);
+        data = await download('reload');
+      }
       this.networkBytes += data.length;
       if (cache) await this.save(cache, url, data);
       this.assertOpen();

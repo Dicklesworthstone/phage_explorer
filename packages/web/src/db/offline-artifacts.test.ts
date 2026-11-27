@@ -145,6 +145,39 @@ describe('resumable protected offline selections', () => {
       await assert.rejects(store.prepareOffline(VERSION, [asset('[1]')]), /incomplete/);
     } finally { await store.close(); }
   });
+  test('a stale HTTP artifact is reloaded once at the same URL and verified before offline use', async () => {
+    for (const stale of ['[9]', '[99]', '[']) {
+      const cache = new MemoryCache(), item = asset('[1]'), url = dataArtifactUrl(BASE, item);
+      const visits: Array<[string, RequestInit['cache']]> = [];
+      const store = new VerifiedArtifactStore({ manifestUrl: BASE, openCache: async () => cache,
+        fetch: async (input, init) => {
+          visits.push([String(input), init?.cache]);
+          return new Response(init?.cache === 'reload' ? '[1]' : stale);
+        },
+      });
+      try {
+        await store.prepareOffline(VERSION, [item]);
+        assert.deepEqual(visits, [[url, 'default'], [url, 'reload']]);
+        assert.deepEqual(await store.inspect([item]), ['available']);
+        assert.equal(new TextDecoder().decode((await store.read(item)).data), '[1]');
+        assert.equal(visits.length, 2);
+      } finally { await store.close(); }
+    }
+  });
+  test('a persistent checksum failure is bounded and cannot be saved as a verified artifact', async () => {
+    const cache = new MemoryCache(), item = asset('[1]');
+    const modes: Array<RequestInit['cache']> = [];
+    const store = new VerifiedArtifactStore({ manifestUrl: BASE, openCache: async () => cache,
+      fetch: async (_input, init) => { modes.push(init?.cache); return new Response('[9]'); },
+    });
+    try {
+      await assert.rejects(store.read(item), /integrity/);
+      assert.deepEqual(modes, ['default', 'reload']);
+      await assert.rejects(store.read(item, { forceDownload: true }), /integrity/);
+      assert.deepEqual(modes, ['default', 'reload', 'reload']);
+      assert.deepEqual(await store.inspect([item]), ['missing']);
+    } finally { await store.close(); }
+  });
   test('repairs a corrupt selected file and leaves valid files untouched', async () => {
     const { store, cache, requests } = setup();
     try {

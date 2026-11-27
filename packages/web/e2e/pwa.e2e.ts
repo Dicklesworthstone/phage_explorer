@@ -242,3 +242,41 @@ test('actual stale service-worker response cannot replace the known-good databas
     await testInfo.attach('stale-worker-recovery', { body: JSON.stringify({ before, workerResponses, recovered: await identity(page) }), contentType: 'application/json' });
   } finally { await finalize(); }
 });
+
+test('a stale cached gzip is repaired from the same origin URL and stays available offline', async ({ page, context, assets }, testInfo) => {
+  const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  try {
+    await page.goto(`${assets.origin}/?phage=lambda&model=0`);
+    await catalog(page);
+    await controlled(page);
+    const previous = await identity(page);
+    expect(previous?.valid).toBe(true);
+    const manifest = await (await page.request.get(`${assets.origin}/phage.db.manifest.json`)).json();
+    const version = 'f'.repeat(64);
+    const path = `/phage.db.gz?v=${version}`;
+    assets.manifestOverride = { ...manifest, artifacts: undefined, contentVersion: version };
+    // A valid gzip of different uncompressed bytes, served as HTTP 200.
+    await page.evaluate(async (key) => {
+      const compressed = new Response('stale bytes').body!.pipeThrough(new CompressionStream('gzip'));
+      const cache = await caches.open('phage-database-v2');
+      await cache.put(key, new Response(compressed));
+    }, path);
+    const before = assets.requests.length;
+    await page.reload();
+    await catalog(page);
+    const expected = { contentVersion: version, sha256: manifest.sha256, valid: true };
+    await expect.poll(() => identity(page)).toEqual(expected);
+    expect(assets.requests.slice(before).filter(r => DATABASE_ASSET.test(r.path)).map(r => r.path)).toEqual([path]);
+    // Check that the worker repaired its own entry as well as IndexedDB.
+    await expect.poll(() => page.evaluate(async key => {
+      const cache = await caches.open('phage-database-v2');
+      const bytes = await (await cache.match(key))!.arrayBuffer();
+      return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
+    }, path)).toBe(manifest.artifacts.gzip.sha256);
+    await context.setOffline(true);
+    await page.reload();
+    await catalog(page);
+    expect(await identity(page)).toEqual(expected);
+    expect(pageErrors).toEqual([]);
+  } finally { await context.setOffline(false); await finalize(); }
+});

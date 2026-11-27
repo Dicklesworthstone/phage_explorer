@@ -648,10 +648,10 @@ export class DatabaseLoader {
     return this.decompressGzipWithPakoMainThread(data);
   }
 
-  private async fetchBytes(url: string, label: string, maximumBytes?: number): Promise<Uint8Array> {
+  private async fetchBytes(url: string, label: string, cache: RequestCache, maximumBytes?: number): Promise<Uint8Array> {
     let response: Response;
     try {
-      response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(60_000) });
+      response = await fetch(url, { cache, signal: AbortSignal.timeout(60_000) });
     } catch (error) {
       const offlineHint =
         typeof navigator !== 'undefined' && navigator.onLine === false
@@ -815,10 +815,35 @@ export class DatabaseLoader {
     await accessLegacySnapshot(this.config.dbName, this.config.manifestUrl, this.snapshotKey, true);
   }
 
+  /** Re-fetch the same transport from origin once if cached bytes fail integrity. */
+  private async verifiedTransfer(
+    manifest: DatabaseManifest,
+    forceDownload: boolean,
+    read: (mode: RequestCache) => Promise<Uint8Array>
+  ): Promise<Uint8Array> {
+    const attempt = async (mode: RequestCache) => {
+      const bytes = await read(mode);
+      await verifyDatabaseBytes(bytes, manifest);
+      return bytes;
+    };
+    if (forceDownload) return attempt('reload');
+    try {
+      return await attempt('no-store');
+    } catch (error) {
+      if (!(error instanceof DatabaseIntegrityError)) throw error;
+      try {
+        return await attempt('reload');
+      } catch {
+        // A failed repair cannot authorize a fallback to another transport.
+        throw error;
+      }
+    }
+  }
+
   /**
    * Download and initialize the database
    */
-  async downloadDatabase(manifest: DatabaseManifest): Promise<{ db: Database; data: Uint8Array }> {
+  async downloadDatabase(manifest: DatabaseManifest, forceDownload = false): Promise<{ db: Database; data: Uint8Array }> {
     if (!isDatabaseManifest(manifest)) throw new Error('A valid database manifest is required.');
     const urls = databaseDownloadUrls(this.config, manifest);
     // Neither downloading nor verifying the SQLite bytes needs the SQL engine.
@@ -840,19 +865,19 @@ export class DatabaseLoader {
       try {
         this.progress('downloading', 10, 'Downloading database (compressed)...');
 
-        this.timing?.startStage('fetch');
-        const compressed = await this.fetchBytes(urls.gzip, 'Downloading (gzip)',
-          manifest.artifacts ? Math.max(manifest.size, manifest.artifacts.gzip.size) : undefined);
-        this.timing?.endStage('fetch');
-        this.timing?.setBytesTransferred(compressed.length);
+        combined = await this.verifiedTransfer(manifest, forceDownload, async (mode) => {
+          this.timing?.startStage('fetch');
+          const compressed = await this.fetchBytes(urls.gzip, 'Downloading (gzip)', mode,
+            manifest.artifacts ? Math.max(manifest.size, manifest.artifacts.gzip.size) : undefined);
+          this.timing?.endStage('fetch');
+          this.timing?.setBytesTransferred(compressed.length);
 
-        // In some deployments the server may auto-decompress; if so, accept the bytes as-is.
-        if (this.isValidSqliteData(compressed)) {
-          await verifyDatabaseBytes(compressed, manifest);
-          combined = compressed;
-          this.timing?.setSource('db');
-          this.timing?.setDecompressionMethod('none');
-        } else {
+          // Some origins return a transparently decoded SQLite file for the gzip URL.
+          if (this.isValidSqliteData(compressed)) {
+            this.timing?.setSource('db');
+            this.timing?.setDecompressionMethod('none');
+            return compressed;
+          }
           if (manifest.artifacts && (compressed.length !== manifest.artifacts.gzip.size ||
               await sha256(compressed) !== manifest.artifacts.gzip.sha256)) throw new DatabaseIntegrityError();
           this.progress(
@@ -862,16 +887,17 @@ export class DatabaseLoader {
           );
 
           this.timing?.startStage('decompress');
-          try { combined = await gz.decompress(compressed); }
+          let decoded: Uint8Array;
+          try { decoded = await gz.decompress(compressed); }
           catch (error) {
             if (manifest.artifacts && !(error instanceof GzipDecoderUnavailableError)) throw new DatabaseIntegrityError();
             throw error;
           }
           this.timing?.endStage('decompress');
-
           this.timing?.setSource('db.gz');
           this.timing?.setDecompressionMethod(gz.label === 'native' ? 'native' : 'pako');
-        }
+          return decoded;
+        });
       } catch (error) {
         // A missing compressed transport may use raw bytes from the SAME
         // generation. An integrity failure must never try a mutable alias.
@@ -884,7 +910,8 @@ export class DatabaseLoader {
       this.progress('downloading', 10, 'Downloading database...');
 
       this.timing?.startStage('fetch');
-      combined = await this.fetchBytes(urls.sqlite, 'Downloading', manifest.size);
+      combined = await this.verifiedTransfer(manifest, forceDownload, mode =>
+        this.fetchBytes(urls.sqlite, 'Downloading', mode, manifest.size));
       this.timing?.endStage('fetch');
 
       this.timing?.setBytesTransferred(combined.length);
@@ -894,7 +921,6 @@ export class DatabaseLoader {
 
     this.timing?.setBytesDecompressed(combined.length);
     this.progress('decompressing', 60, 'Processing database...');
-    await verifyDatabaseBytes(combined, manifest);
 
     // Validate downloaded data is a valid SQLite database
     if (!this.isValidSqliteData(combined)) {
@@ -1008,7 +1034,7 @@ export class DatabaseLoader {
       if (!manifest || (options.forceDownload && !confirmed)) throw new Error('Database manifest unavailable or unsupported. Connect to the network and refresh the application.');
 
       // Download fresh copy (timing is recorded inside downloadDatabase)
-      const { db, data } = await this.downloadDatabase(manifest);
+      const { db, data } = await this.downloadDatabase(manifest, options.forceDownload);
 
       // Integrity and SQLite opening have succeeded. Do not hold first use
       // behind IndexedDB persistence, which can be slow on a busy device.
