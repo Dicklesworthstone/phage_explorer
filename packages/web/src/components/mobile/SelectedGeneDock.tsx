@@ -15,8 +15,7 @@ import { haptics } from '../../utils/haptics';
 import {
   buildShareUrl,
   getGeneShareKey,
-  normalizeShareableOverlayId,
-  type ShareableOverlayId,
+  getShareableTool,
   type ShareUrlState,
 } from '../../utils/share-state';
 import {
@@ -217,18 +216,12 @@ export function SelectedGeneDock({ source }: { source: SelectedCdsSource | null 
     const baseUrl = typeof window === 'undefined'
       ? 'https://phage-explorer.org/'
       : window.location.href;
-    let tool: ShareableOverlayId | null = null;
-    for (let index = stack.length - 1; index >= 0; index -= 1) {
-      tool = normalizeShareableOverlayId(stack[index]);
-      if (tool) break;
-    }
-
     return getSelectedGenePublicLinks(baseUrl, currentPhage, selectedGene, {
       viewMode,
       position: scrollPosition,
       readingFrame,
       show3DModel,
-      tool,
+      tool: getShareableTool(stack),
     });
   }, [currentPhage, readingFrame, scrollPosition, selectedGene, show3DModel, stack, viewMode]);
   const shareUrl = publicLinks?.shareUrl;

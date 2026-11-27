@@ -9,7 +9,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePhageStore } from '@phage-explorer/state';
 import { useOverlay } from './overlays/OverlayProvider';
 import { haptics } from '../utils/haptics';
-import { buildShareUrl, getGeneShareKey, parseShareState } from '../utils/share-state';
+import { buildShareUrl, getGeneShareKey, getShareableTool } from '../utils/share-state';
 import {
   getPhageCollectionKey,
   readPhageCollections,
@@ -156,7 +156,7 @@ function CitationIcon(): React.ReactElement {
 }
 
 export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElement | null {
-  const { open } = useOverlay();
+  const { open, stack } = useOverlay();
   const currentPhage = usePhageStore((state) => state.currentPhage);
   const selectedGeneId = usePhageStore((state) => state.selectedGeneId);
   const viewMode = usePhageStore((state) => state.viewMode);
@@ -255,8 +255,6 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
     const baseUrl = typeof window === 'undefined'
       ? 'https://phage-explorer.org/'
       : window.location.href;
-    const currentTool = parseShareState(baseUrl).tool;
-
     return buildShareUrl(baseUrl, {
       phageKey: stats.slug?.trim() || stats.accession,
       geneKey: getGeneShareKey(selectedGene),
@@ -264,9 +262,9 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
       position: scrollPosition,
       readingFrame,
       show3DModel,
-      tool: currentTool,
+      tool: getShareableTool(stack),
     });
-  }, [readingFrame, scrollPosition, selectedGene, show3DModel, stats, viewMode]);
+  }, [readingFrame, scrollPosition, selectedGene, show3DModel, stack, stats, viewMode]);
 
   const handleCopyAccession = useCallback(async () => {
     if (!stats) return;

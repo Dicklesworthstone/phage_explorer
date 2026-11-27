@@ -133,6 +133,15 @@ export function normalizeShareableOverlayId(value: unknown): ShareableOverlayId 
   return SHAREABLE_OVERLAY_BY_NORMALIZED.get(value.trim().toLowerCase()) ?? null;
 }
 
+/** Transient dialogs above a tool (for example, the palette) are not part of a link. */
+export function getShareableTool(stack: readonly { id: OverlayId }[]): ShareableOverlayId | null {
+  for (let index = stack.length - 1; index >= 0; index--) {
+    const tool = normalizeShareableOverlayId(stack[index].id);
+    if (tool) return tool;
+  }
+  return null;
+}
+
 export function parseShareState(input: string | URL): ParsedShareState {
   let url: URL;
   try {

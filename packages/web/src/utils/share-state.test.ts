@@ -5,6 +5,7 @@ import {
   findGeneId,
   findPhageIndex,
   getGeneShareKey,
+  getShareableTool,
   isShareableOverlayId,
   normalizeShareableOverlayId,
   parseShareState,
@@ -168,6 +169,11 @@ describe('gene share identity', () => {
 });
 
 describe('shareable overlays', () => {
+  it('keeps the top shareable tool from the actual overlay stack shape', () => {
+    expect(getShareableTool([{ id: 'complexity' }, { id: 'gcSkew' }, { id: 'settings' }])).toBe('gcSkew');
+    expect(getShareableTool([{ id: 'welcome' }])).toBeNull();
+  });
+
   it('accepts analysis views and rejects transient application chrome', () => {
     expect(isShareableOverlayId('gcSkew')).toBe(true);
     expect(normalizeShareableOverlayId('RNASECONDARY')).toBeNull();

@@ -6,9 +6,8 @@ import {
   findGeneId,
   getGeneShareKey,
   getInitialShareState,
-  normalizeShareableOverlayId,
+  getShareableTool,
   parseShareState,
-  type ShareableOverlayId,
 } from '../utils/share-state';
 
 let pendingInitialRestore = true;
@@ -101,12 +100,6 @@ export function ShareStateController(): ReactElement | null {
     const timer = window.setTimeout(() => {
       const phageKey = currentPhage.slug?.trim() || currentPhage.accession.trim();
       const geneKey = getGeneShareKey(selectedGene);
-      let tool: ShareableOverlayId | null = null;
-      for (let index = stack.length - 1; index >= 0; index -= 1) {
-        tool = normalizeShareableOverlayId(stack[index]);
-        if (tool) break;
-      }
-
       const nextUrl = buildShareUrl(window.location.href, {
         phageKey,
         geneKey,
@@ -114,7 +107,7 @@ export function ShareStateController(): ReactElement | null {
         position: scrollPosition,
         readingFrame,
         show3DModel,
-        tool,
+        tool: getShareableTool(stack),
       });
       const previousPhageKey = lastHistoryPhageKeyRef.current;
       const phageChanged = previousPhageKey !== null && previousPhageKey !== phageKey;
