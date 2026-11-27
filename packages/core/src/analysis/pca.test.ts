@@ -3,8 +3,9 @@ import { createHash } from 'node:crypto';
 import type { KmerVector } from './kmer-frequencies';
 import { computeKmerVectorsBatch } from './kmer-frequencies';
 import { parseAnalysisRecord, serializeAnalysisRecord } from '../analysis-result';
-import { computeScreePlotData, computeSignatureNeighborhood, createSignatureNeighborhoodRecord,
+import { computeMatrixPCA, computeScreePlotData, computeSignatureNeighborhood, createSignatureNeighborhoodRecord,
   getTopLoadings, performPCA, projectToPCA, type PCAProjection, type SignatureSource } from './pca';
+import { decomposeBias } from '../bias-decomposition';
 
 describe('PCA', () => {
   it('performPCA > empty input returns empty result', () => {
@@ -206,6 +207,135 @@ describe('PCA', () => {
 
     expect(result.loadings.length).toBeLessThanOrEqual(2);
     expect(result.eigenvalues.length).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('rank-aware covariance decomposition', () => {
+  const vectors = (rows: number[][]): KmerVector[] => rows.map((frequencies, i) => ({
+    phageId: i, name: `sample-${i}`, frequencies: new Float32Array(frequencies), gcContent: 0, genomeLength: 10,
+  }));
+
+  it('does not duplicate a rank-one contrast as the second plot axis', () => {
+    // Difference d=(1/2,-1,1/2,0); two-sample covariance is dd'/2.
+    // Its only eigenvalue is ||d||²/2 = 3/4. Every other projection is zero.
+    const result = performPCA(vectors([[0.5, 0, 0.5, 0], [0, 1, 0, 0]]));
+    expect(result.eigenvalues[0]).toBeCloseTo(0.75, 12);
+    expect(result.eigenvalues[1]).toBe(0);
+    expect(Array.from(result.loadings[1])).toEqual([0, 0, 0, 0]);
+    expect(result.projections.map(p => p.pc2)).toEqual([0, 0]);
+    expect(result.projections.map(p => Math.abs(p.pc1))).toEqual([
+      expect.closeTo(Math.sqrt(3 / 8), 6), expect.closeTo(Math.sqrt(3 / 8), 6),
+    ]);
+    expect(result.varianceExplained[0]).toBeCloseTo(1, 12);
+    expect(result.varianceExplained[1]).toBe(0);
+  });
+
+  it('preserves repeated-eigenvalue subspaces under sample permutation', () => {
+    // The three basis rows have covariance (I - 11'/3)/2: eigenvalues
+    // 1/2,1/2,0. Compare the plane projector, never arbitrary individual axes.
+    const rows = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    for (const input of [rows, [rows[2], rows[0], rows[1]]]) {
+      const result = computeMatrixPCA(input, { numComponents: 3 });
+      expect(result.eigenvalues[0]).toBeCloseTo(0.5, 12);
+      expect(result.eigenvalues[1]).toBeCloseTo(0.5, 12);
+      expect(result.eigenvalues[2]).toBe(0);
+      for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+        const projector = result.loadings[0][i] * result.loadings[0][j] + result.loadings[1][i] * result.loadings[1][j];
+        expect(projector).toBeCloseTo((i === j ? 1 : 0) - 1 / 3, 12);
+      }
+      const inner = result.loadings[0].reduce((sum, value, i) => sum + value * result.loadings[1][i], 0);
+      expect(inner).toBeCloseTo(0, 12);
+    }
+  });
+
+  it('finds variance orthogonal to the old fixed seed and does not suppress small-scale variance', () => {
+    // u=(1,-2,1,0), v=(1,0,-1,0) are orthogonal; the first is
+    // orthogonal to the old unnormalized deterministic start vector as well.
+    // Paired ±u and ±v give eigenvalues 4 and 4/3 respectively.
+    const rows = [[1, -2, 1, 0], [-1, 2, -1, 0], [1, 0, -1, 0], [-1, 0, 1, 0]];
+    for (const scale of [1, 1e-8, 1e8]) {
+      const result = computeMatrixPCA(rows.map(row => row.map(value => value * scale)), { numComponents: 3 });
+      expect(result.eigenvalues[0] / scale ** 2).toBeCloseTo(4, 10);
+      expect(result.eigenvalues[1] / scale ** 2).toBeCloseTo(4 / 3, 10);
+      expect(result.eigenvalues[2]).toBe(0);
+      expect(result.eigenvalues[0] / result.totalVariance).toBeCloseTo(0.75, 12);
+    }
+  });
+
+  it('resolves a small correlated block beside a much larger independent contrast', () => {
+    // Exact covariance is (4/3) * diag(1, e²*[[1,1],[1,1]]).
+    // A tolerance relative to the full trace alone leaves the 2×2 block
+    // untouched and incorrectly reports two small orthogonal components.
+    const e = 1e-5, smallEigenvalue = 8 * e * e / 3;
+    const rows = [[1, e, e], [-1, e, e], [1, -e, -e], [-1, -e, -e]];
+    for (const input of [rows, [rows[3], rows[1], rows[0], rows[2]]]) {
+      const result = computeMatrixPCA(input, { numComponents: 3 });
+      expect(result.eigenvalues[0]).toBeCloseTo(4 / 3, 12);
+      expect(result.eigenvalues[1] / smallEigenvalue).toBeCloseTo(1, 12);
+      expect(result.eigenvalues[2]).toBe(0);
+      expect(Math.abs(result.loadings[1][0])).toBeLessThan(1e-12);
+      expect(result.loadings[1][1]).toBeCloseTo(Math.SQRT1_2, 12);
+      expect(result.loadings[1][2]).toBeCloseTo(Math.SQRT1_2, 12);
+      for (let i = 0; i < 2; i++) {
+        const axis = result.loadings[i], eigenvalue = result.eigenvalues[i];
+        // Independent covariance-vector product, checked relative to each
+        // eigenvalue rather than to the dominating first component.
+        const covarianceTimesAxis = [4 * axis[0] / 3,
+          4 * e * e * (axis[1] + axis[2]) / 3,
+          4 * e * e * (axis[1] + axis[2]) / 3];
+        const relativeResidual = Math.hypot(...covarianceTimesAxis.map((value, j) => value - eigenvalue * axis[j])) / eigenvalue;
+        expect(relativeResidual).toBeLessThan(1e-12);
+      }
+    }
+  });
+
+  it('uses the small Gram matrix for wide data and covariance for many windows', () => {
+    const wide = Array.from({ length: 4 }, (_, row) => Array.from({ length: 4096 }, (_, col) =>
+      col === 0 ? (row % 2) * 2 : col === 4095 ? Math.floor(row / 2) : 0));
+    const result = computeMatrixPCA(wide, { numComponents: 3 });
+    expect(result.eigenvalues[0]).toBeCloseTo(4 / 3, 10);
+    expect(result.eigenvalues[1]).toBeCloseTo(1 / 3, 10);
+    expect(result.eigenvalues[2]).toBe(0);
+    const tall = computeMatrixPCA(Array.from({ length: 10000 }, (_, i) => [i % 2, 0.1, 0.1, 0.1, 0.1]));
+    expect(tall.eigenvalues[0]).toBeCloseTo(2500 / 9999, 12);
+    expect(tall.eigenvalues.slice(1)).toEqual([0, 0]);
+  });
+
+  it('keeps exactly constant and singleton inputs at zero variance', () => {
+    for (const rows of [[[0.1, 0.2]], Array.from({ length: 20 }, () => [0.1, 0.2])]) {
+      const result = computeMatrixPCA(rows);
+      expect(result.totalVariance).toBe(0);
+      expect(result.eigenvalues.every(value => value === 0)).toBe(true);
+      expect(result.loadings.every(axis => axis.every(value => value === 0))).toBe(true);
+    }
+  });
+
+  it('refuses invalid matrices and exhausted convergence instead of returning invalid plot coordinates', () => {
+    for (const rows of [[[], []], [[1, 2], [1]], [[NaN, 1], [1, 2]], [[Infinity, 1], [1, 2]]]) {
+      expect(() => computeMatrixPCA(rows)).toThrow();
+      expect(() => performPCA(vectors(rows))).toThrow();
+    }
+    for (const options of [{ numComponents: 0 }, { maxIterations: 0 }, { tolerance: NaN }, { tolerance: 0 }]) {
+      expect(() => computeMatrixPCA([[1, 0], [0, 1]], options)).toThrow();
+    }
+    expect(() => computeMatrixPCA([[1, 2, 3], [3, 7, 4], [0, 2, 4], [2, 8, 9]], { maxIterations: 1, tolerance: 1e-12 }))
+      .toThrow('did not converge');
+    expect(() => computeMatrixPCA(Array.from({ length: 257 }, () => new Float32Array(257)))).toThrow('256');
+    // The covariance alone fits the budget (~98.7m visits), but all 256
+    // requested Rayleigh products add ~196m. Refuse before constructing it.
+    const manyRows = Array.from({ length: 3000 }, (_, i) => new Float32Array(256).fill(i % 2));
+    expect(() => computeMatrixPCA(manyRows, { numComponents: 256 })).toThrow('work limit');
+  });
+
+  it('repairs dinucleotide/codon bias projections and keeps small real contrasts at full explained variance', () => {
+    for (const scale of [1, 1e-8]) {
+      const rows = [[0.5, 0, 0.5, 0], [0, 1, 0, 0]].map(vector => vector.map(value => value * scale));
+      const result = decomposeBias(rows.map((vector, i) => ({ name: String(i), vector })))!;
+      expect(result.components[0].explained).toBeCloseTo(1, 12);
+      expect(result.components[1].explained).toBe(0);
+      expect(result.projections.map(p => p.coords[1])).toEqual([0, 0]);
+      expect(result.components[1].loadings).toEqual([0, 0, 0, 0]);
+    }
   });
 });
 

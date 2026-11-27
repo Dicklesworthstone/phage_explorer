@@ -1,6 +1,8 @@
 // Dinucleotide & codon bias decomposition utilities (lightweight PCA/NMF style)
 // Provides frequency extraction and small-matrix PCA for text-only visualization.
 
+import { computeMatrixPCA } from './analysis/pca';
+
 const DINUCLEOTIDES = [
   'AA', 'AC', 'AG', 'AT',
   'CA', 'CC', 'CG', 'CT',
@@ -69,76 +71,6 @@ export function computeDinucleotideFrequencies(seq: string): number[] {
   return counts.map(c => c / total);
 }
 
-// Center matrix rows by feature mean
-function centerMatrix(rows: number[][]): { centered: number[][]; means: number[] } {
-  if (rows.length === 0) return { centered: [], means: [] };
-  const dims = rows[0].length;
-  const means = Array(dims).fill(0);
-  for (const r of rows) {
-    for (let i = 0; i < dims; i++) means[i] += r[i];
-  }
-  for (let i = 0; i < dims; i++) means[i] /= rows.length;
-
-  const centered = rows.map(r => r.map((v, i) => v - means[i]));
-  return { centered, means };
-}
-
-// Covariance matrix (rows = samples, cols = features)
-function covariance(centered: number[][]): number[][] {
-  const n = centered.length;
-  if (n === 0) return [];
-  const d = centered[0].length;
-  const cov = Array.from({ length: d }, () => Array(d).fill(0));
-  for (const row of centered) {
-    for (let i = 0; i < d; i++) {
-      for (let j = 0; j < d; j++) {
-        cov[i][j] += row[i] * row[j];
-      }
-    }
-  }
-  const denom = Math.max(1, n - 1);
-  for (let i = 0; i < d; i++) {
-    for (let j = 0; j < d; j++) {
-      cov[i][j] /= denom;
-    }
-  }
-  return cov;
-}
-
-// Power iteration for top eigenvector/value
-function powerIteration(mat: number[][], iters = 64): { vec: number[]; val: number } {
-  const n = mat.length;
-  // Initialize with deterministic vector (matches Rust implementation)
-  let v = Array.from({ length: n }, (_, i) => ((i * 7919 + 104729) % 1000) / 1000.0 - 0.5);
-  const normInit = Math.hypot(...v) || 1;
-  v = v.map(x => x / normInit);
-
-  const mv = (vector: number[]) => mat.map(row => row.reduce((sum, val, idx) => sum + val * vector[idx], 0));
-
-  for (let i = 0; i < iters; i++) {
-    const w = mv(v);
-    const norm = Math.hypot(...w) || 1;
-    v = w.map(x => x / norm);
-  }
-
-  // Canonicalize sign: make largest element positive to ensure stable orientation
-  let maxAbs = -1;
-  let maxIdx = -1;
-  v.forEach((val, i) => {
-      if (Math.abs(val) > maxAbs) {
-          maxAbs = Math.abs(val);
-          maxIdx = i;
-      }
-  });
-  if (maxIdx >= 0 && v[maxIdx] < 0) {
-      v = v.map(x => -x);
-  }
-
-  const Av = mv(v);
-  const val = v.reduce((sum, vi, idx) => sum + vi * Av[idx], 0);
-  return { vec: v, val };
-}
-
 // Project rows onto two principal components
 function project2(centered: number[][], pc1: number[], pc2: number[]): [number, number][] {
   return centered.map(row => {
@@ -154,25 +86,19 @@ export function decomposeBias(
 ): BiasDecomposition | null {
   if (rows.length < 2) return null;
   const matrix = rows.map(r => r.vector);
-  const { centered, means } = centerMatrix(matrix);
-  const cov = covariance(centered);
-
-  const { vec: pc1, val: val1 } = powerIteration(cov);
-  // Deflate for PC2
-  const covDeflated = cov.map((row, i) =>
-    row.map((c, j) => c - val1 * pc1[i] * pc1[j])
-  );
-  const { vec: pc2, val: val2 } = powerIteration(covDeflated);
-
+  const decomposition = computeMatrixPCA(matrix, { numComponents: 2 });
+  const means = Array.from(decomposition.mean);
+  const centered = matrix.map(row => row.map((value, j) => value - means[j]));
+  const pc1 = Array.from(decomposition.loadings[0]);
+  const pc2 = Array.from(decomposition.loadings[1] ?? new Float64Array(means.length));
   const coords = project2(centered, pc1, pc2);
-  // Total variance = trace of covariance matrix (sum of eigenvalues)
-  const totalVar = cov.reduce((sum, row, i) => sum + row[i], 0);
-  const safeTotalVar = Math.max(1e-9, totalVar);
+  const explained = (i: number) => decomposition.totalVariance > 0
+    ? (decomposition.eigenvalues[i] ?? 0) / decomposition.totalVariance : 0;
 
   return {
     components: [
-      { id: 1, loadings: pc1, explained: Math.abs(val1) / safeTotalVar },
-      { id: 2, loadings: pc2, explained: Math.abs(val2) / safeTotalVar },
+      { id: 1, loadings: pc1, explained: explained(0) },
+      { id: 2, loadings: pc2, explained: explained(1) },
     ],
     projections: rows.map((r, i) => ({ name: r.name, coords: coords[i] })),
     means,

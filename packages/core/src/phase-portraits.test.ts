@@ -90,4 +90,19 @@ describe('exact annotated-CDS phase portraits', () => {
       expect(() => computePhasePortrait(protein, 2, 1)).toThrow('supported protein sequence');
     }
   });
+
+  it('shows a single real contrast on one axis and centers zero-variance portraits', () => {
+    // Two property vectors span exactly one centered dimension, regardless of
+    // how many properties differ between M and D. PC2 must not repeat PC1.
+    const portrait = computePhasePortrait('MD', 1, 1);
+    expect(portrait.explained[0]).toBeCloseTo(1, 12);
+    expect(portrait.explained[1]).toBe(0);
+    expect(portrait.points.map(point => point.coord.y)).toEqual([0.5, 0.5]);
+    expect(portrait.points.map(point => point.coord.x).sort()).toEqual([0, 1]);
+    for (const protein of ['M', 'MMMMMM']) {
+      const constant = computePhasePortrait(protein, 1, 1);
+      expect(constant.explained).toEqual([0, 0]);
+      expect(constant.points.every(point => point.coord.x === 0.5 && point.coord.y === 0.5)).toBe(true);
+    }
+  });
 });
