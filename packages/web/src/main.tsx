@@ -7,7 +7,6 @@ import ErrorBoundary from './components/layout/ErrorBoundary';
 import { ScrollProvider } from './providers';
 import App from './App';
 import { GeneSelectionBridge } from './components/GeneSelectionBridge';
-import { SelectedGeneLifecycleController } from './components/SelectedGeneLifecycleController';
 import { applyInitialShareState } from './components/ShareStateController';
 import './styles.css';
 import './styles/scroll.css';
@@ -178,7 +177,6 @@ if (container) {
                 ) : <>
                   <App />
                   <GeneSelectionBridge />
-                  <SelectedGeneLifecycleController />
                 </>}
               </OverlayProvider>
             </ToastProvider>

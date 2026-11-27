@@ -1,41 +1,19 @@
-import { useLayoutEffect, useRef, type ReactElement } from 'react';
-import { usePhageStore, useSelectedGeneStore } from '../store';
+import { usePhageStore } from '@phage-explorer/state';
+import type { PhageSelectionSnapshot, SelectionView } from '../hooks/PhageSelectionSession';
 
-export function shouldClearSelectedGene(
-  previousPhageId: number | null,
-  currentPhageId: number | null
-): boolean {
-  return (
-    previousPhageId !== null &&
-    currentPhageId !== null &&
-    previousPhageId !== currentPhageId
-  );
-}
-
-/**
- * Keeps a gene selection scoped to the phage that owns it.
- *
- * Gene IDs are database-local integers and can collide across phages. Without
- * this guard, switching phages can make an unrelated gene with the same ID look
- * selected until another interaction repairs the state.
+/** A genome switch must scope its gene and coordinates to the newly accepted source.
+ * Apply the whole selection in one publication, before any renderer or history subscriber sees it.
  */
-export function SelectedGeneLifecycleController(): ReactElement | null {
-  const currentPhageId = usePhageStore((state) => state.currentPhage?.id ?? null);
-  const clearSelectedGene = useSelectedGeneStore((state) => state.clearSelectedGene);
-  const previousPhageIdRef = useRef<number | null>(null);
-
-  useLayoutEffect(() => {
-    if (currentPhageId === null) return;
-
-    const previousPhageId = previousPhageIdRef.current;
-    previousPhageIdRef.current = currentPhageId;
-
-    if (shouldClearSelectedGene(previousPhageId, currentPhageId)) {
-      clearSelectedGene();
-    }
-  }, [clearSelectedGene, currentPhageId]);
-
-  return null;
+export function commitExplorerSelection(
+  next: PhageSelectionSnapshot,
+  previous: PhageSelectionSnapshot,
+  view?: SelectionView,
+): void {
+  usePhageStore.setState({
+    currentPhage: next.selection?.phage ?? null,
+    currentPhageIndex: next.selection?.index ?? 0,
+    isLoadingPhage: next.pendingIndex !== null,
+    error: next.error?.message ?? null,
+    ...(next.selection !== previous.selection ? view ?? { scrollPosition: 0, selectedGeneId: null } : {}),
+  });
 }
-
-export default SelectedGeneLifecycleController;

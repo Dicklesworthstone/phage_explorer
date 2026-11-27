@@ -1,4 +1,4 @@
-import type { PhageFull } from '@phage-explorer/core';
+import type { ReadingFrame, ViewMode, PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../db/types';
 
 export interface PhageSelection {
@@ -12,10 +12,16 @@ export interface PhageSelectionSnapshot {
   pendingIndex: number | null;
   error: { index: number; message: string } | null;
 }
+export interface SelectionView {
+  viewMode: ViewMode;
+  readingFrame: ReadingFrame;
+  scrollPosition: number;
+  selectedGeneId: number | null;
+}
 export interface PhageSelectionOptions {
   signal?: AbortSignal;
-  /** Verify a complete owned candidate before it can replace the visible selection. */
-  verify?: (selection: PhageSelection) => Promise<void>;
+  /** A verified position is published together with its complete, still-owned source. */
+  verify?: (selection: PhageSelection) => Promise<SelectionView | void>;
 }
 interface Operation {
   repository: PhageRepository;
@@ -42,19 +48,19 @@ export class PhageSelectionSession {
   private operation: Operation | null = null;
   private readonly listeners = new Set<() => void>();
 
-  constructor(private readonly onChange?: (next: PhageSelectionSnapshot, previous: PhageSelectionSnapshot) => void) {}
+  constructor(private readonly onChange?: (next: PhageSelectionSnapshot, previous: PhageSelectionSnapshot, view?: SelectionView) => void) {}
 
   getSnapshot = (): PhageSelectionSnapshot => this.snapshot;
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
   };
-  private publish(next: PhageSelectionSnapshot): void {
+  private publish(next: PhageSelectionSnapshot, view?: SelectionView): void {
     const previous = this.snapshot;
     this.snapshot = next;
     // The app commits its shared phage/index state before notifying readers of
     // the matching sequence. Neither store can expose half of a new selection.
-    this.onChange?.(next, previous);
+    this.onChange?.(next, previous, view);
     for (const listener of [...this.listeners]) if (this.listeners.has(listener)) listener();
   }
   private stop(): void {
@@ -113,10 +119,10 @@ export class PhageSelectionSession {
         throw new Error('The complete genome sequence could not be read. Retry when its data are available.');
       }
       const selection = { index, phage, sequence };
-      if (options.verify) await wait(options.verify(selection), signal);
+      const view = options.verify ? await wait(options.verify(selection), signal) : undefined;
       if (!this.owns(operation)) return false;
       this.operation = null;
-      this.publish({ repository, selection, pendingIndex: null, error: null });
+      this.publish({ repository, selection, pendingIndex: null, error: null }, view || undefined);
       // Neighbor loading is optional; an offline neighbor must never invalidate
       // the selected genome or create an unhandled rejection.
       void Promise.resolve().then(() => {

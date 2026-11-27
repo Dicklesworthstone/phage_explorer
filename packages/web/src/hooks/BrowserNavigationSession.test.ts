@@ -6,6 +6,7 @@ import { importLocalGenomes } from '../../../core/src/genome-import';
 import { parseSavedViews, serializeSavedViews } from '../../../core/src/saved-views';
 import { terminalViewSource, parseTerminalViews, serializeTerminalViews } from '../../../tui/src/terminal-navigation-session';
 import type { PhageRepository } from '../db/types';
+import { commitExplorerSelection } from '../components/SelectedGeneLifecycleController';
 import { PhageSelectionSession } from './PhageSelectionSession';
 import { BrowserNavigationSession, browserViewSource, readSavedViewsFile, type BrowserNavigationRuntime } from './BrowserNavigationSession';
 
@@ -43,11 +44,7 @@ async function fixture(runtime: BrowserNavigationRuntime = {}, local = false) {
   };
   usePhageStore.setState({ phages, currentPhage: null, currentPhageIndex: 0, isLoadingPhage: false,
     viewMode: 'dna', readingFrame: 0, scrollPosition: 0, selectedGeneId: null, error: null });
-  const selection = new PhageSelectionSession((next, prior) => usePhageStore.setState({
-    currentPhage: next.selection?.phage ?? null, currentPhageIndex: next.selection?.index ?? 0,
-    isLoadingPhage: next.pendingIndex !== null, error: next.error?.message ?? null,
-    ...(next.selection !== prior.selection ? { scrollPosition: 0, selectedGeneId: null } : {}),
-  }));
+  const selection = new PhageSelectionSession(commitExplorerSelection);
   selection.setRepository(repository);
   const session = new BrowserNavigationSession(selection, runtime), disconnect = session.connect();
   cleanups.push(() => { disconnect(); selection.cancel(); usePhageStore.setState(previous); });
@@ -196,19 +193,69 @@ describe('ordinary browser navigation and portable named views', () => {
     assert.equal(usePhageStore.getState().readingFrame, -1);
   });
 
-  test('protects user position/frame/gene edits while the accepted selection is waiting for layout effects', async () => {
-    for (const edit of [{ scrollPosition: 12 }, { readingFrame: -3 as const }, { selectedGeneId: 7 }, { viewMode: 'dual' as const }]) {
-      const layout = deferred<void>();
-      const f = await fixture({ settle: () => layout.promise });
+  test('publishes a cross-genome restore with its verified view in the first visible selection', async () => {
+    const f = await fixture();
+    usePhageStore.setState({ viewMode: 'aa', scrollPosition: 5, readingFrame: -2, selectedGeneId: 7 }); await tick();
+    assert.equal(f.session.saveCurrent('Original'), true);
+    await f.select(1);
+    usePhageStore.setState({ viewMode: 'dual', readingFrame: 1, scrollPosition: 27, selectedGeneId: 7 }); await tick();
+    const departure = f.session.getSnapshot().history.at(-1)!;
+    const observed: unknown[] = [];
+    const unsubscribe = usePhageStore.subscribe((state, previous) => {
+      if (state.currentPhage !== previous.currentPhage) observed.push([state.currentPhage?.accession,
+        state.viewMode, state.readingFrame, state.scrollPosition, state.selectedGeneId]);
+    });
+    try {
+      assert.equal(await f.session.restoreNamed('Original'), true);
+      assert.deepEqual(observed, [['VIEW_1', 'aa', -2, 5, 7]]);
+      const history = f.session.getSnapshot().history;
+      assert.equal(history.at(-2), departure);
+      assert.equal(history.at(-1)?.view.scrollPosition, 5);
+    } finally { unsubscribe(); }
+  });
+
+  test('retains user edits made as soon as the restored selection becomes visible', async () => {
+    for (const edit of [{ scrollPosition: 12 }, { readingFrame: -3 as const }, { selectedGeneId: null }, { viewMode: 'dual' as const }]) {
+      const f = await fixture();
       usePhageStore.setState({ viewMode: 'aa', scrollPosition: 5, readingFrame: -2, selectedGeneId: 7 }); await tick();
-      f.session.saveCurrent('Original'); await f.select(1);
-      const restoring = f.session.restoreNamed('Original');
-      await until(() => f.selection.getSnapshot().selection?.phage.id === f.phages[0].id);
-      usePhageStore.setState(edit);
+      assert.equal(f.session.saveCurrent('Original'), true); await f.select(1);
+      const unsubscribe = usePhageStore.subscribe((state, previous) => {
+        if (state.currentPhage !== previous.currentPhage && state.currentPhage?.accession === 'VIEW_1') {
+          usePhageStore.setState(edit);
+        }
+      });
+      try {
+        assert.equal(await f.session.restoreNamed('Original'), false);
+        await tick();
+        for (const [key, value] of Object.entries(edit)) assert.equal(usePhageStore.getState()[key as keyof ReturnType<typeof usePhageStore.getState>], value);
+        assert.equal(f.session.getSnapshot().busy, false);
+      } finally { unsubscribe(); }
+    }
+  });
+
+  test('a cancelled or expired read leaves the departure view and forward history available', async () => {
+    for (const stop of ['cancel', 'timeout'] as const) {
+      const f = await fixture({ timeoutMs: 200 });
+      assert.equal(f.session.saveCurrent('Destination'), true);
+      await f.select(1);
+      usePhageStore.setState({ viewMode: 'aa', readingFrame: -3, scrollPosition: 8, selectedGeneId: 7 }); await tick();
+      usePhageStore.setState({ scrollPosition: 13 }); await tick();
+      assert.equal(await f.session.moveHistory(-1), true);
+      const before = f.session.getSnapshot(), departure = f.selection.getSnapshot().selection;
+      const read = deferred<PhageFull | null>(), originalRead = f.repository.getPhageByIndex;
+      f.repository.getPhageByIndex = () => read.promise;
+      const restoring = f.session.restoreNamed('Destination');
+      if (stop === 'cancel') f.session.cancel();
       assert.equal(await restoring, false);
-      layout.resolve(); await tick();
-      for (const [key, value] of Object.entries(edit)) assert.equal(usePhageStore.getState()[key as keyof ReturnType<typeof usePhageStore.getState>], value);
-      assert.equal(f.session.getSnapshot().busy, false);
+      read.resolve(f.phages[0]); await tick();
+      assert.equal(f.selection.getSnapshot().selection, departure);
+      const state = usePhageStore.getState();
+      assert.deepEqual([state.viewMode, state.readingFrame, state.scrollPosition, state.selectedGeneId], ['aa', -3, 8, 7]);
+      assert.equal(f.session.getSnapshot().history, before.history);
+      assert.equal(f.session.getSnapshot().historyIndex, before.historyIndex);
+      f.repository.getPhageByIndex = originalRead;
+      assert.equal(await f.session.moveHistory(1), true);
+      assert.equal(usePhageStore.getState().scrollPosition, 13);
     }
   });
 

@@ -21,20 +21,12 @@ interface Restore {
   controller: AbortController; repository: PhageRepository; phages: PhageExplorerState['phages'];
   origin: PhageExplorerState; originSelection: PhageSelection | null; index: number;
   accepted: PhageSelection | null; source: SavedViewSource | null;
-  baseline: PhageExplorerState | null; timedOut: boolean;
+  entry: SavedView; timedOut: boolean;
 }
 export interface BrowserNavigationRuntime {
-  now?: () => number; settle?: () => Promise<void>; timeoutMs?: number;
+  now?: () => number; timeoutMs?: number;
 }
 function aborted(): DOMException { return new DOMException('View restoration cancelled.', 'AbortError'); }
-function wait<T>(task: Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const cancel = () => reject(aborted());
-    signal.addEventListener('abort', cancel, { once: true });
-    void task.then(resolve, reject).finally(() => signal.removeEventListener('abort', cancel));
-    if (signal.aborted) cancel();
-  });
-}
 export function readSavedViewsFile(file: Pick<Blob, 'size' | 'arrayBuffer'>, signal: AbortSignal): Promise<string> {
   return readLocalTextFile(file, SAVED_VIEW_LIMITS.bytes, signal);
 }
@@ -53,15 +45,9 @@ function samePosition(a: PhageExplorerState, b: PhageExplorerState): boolean {
     && a.viewMode === b.viewMode && a.readingFrame === b.readingFrame
     && a.scrollPosition === b.scrollPosition && a.selectedGeneId === b.selectedGeneId;
 }
-/** Let the normal cross-genome layout effects clear the old gene/viewport first. */
-async function settleSelection(): Promise<void> {
-  if (typeof requestAnimationFrame === 'undefined') return;
-  await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-}
-
 /** Ordinary navigation owns the same accepted complete selection as the explorer.
  * Save is explicit; history stays in this tab. Restores verify before selection
- * publication and stop if the user edits the view while layout is settling.
+ * publication. A newer user navigation retires the pending request.
  */
 export class BrowserNavigationSession {
   private state: BrowserNavigationSnapshot = { history: [], historyIndex: -1, saved: [], ready: false, busy: false, error: null, notice: null };
@@ -71,17 +57,14 @@ export class BrowserNavigationSession {
   private sourceGeneration = 0;
   private sourceCache = new WeakMap<PhageSelection, Promise<SavedViewSource>>();
   private disconnect: (() => void) | null = null;
-  private selfWrite = false;
   private queued = false;
   private lastChange = 0;
   private scrollBurst = false;
   private readonly now: () => number;
-  private readonly settle: () => Promise<void>;
   private readonly timeoutMs: number;
 
   constructor(private readonly selection: PhageSelectionSession, runtime: BrowserNavigationRuntime = {}) {
     this.now = runtime.now ?? Date.now;
-    this.settle = runtime.settle ?? settleSelection;
     this.timeoutMs = runtime.timeoutMs ?? SAVED_VIEW_LIMITS.timeoutMs;
     if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 60000) throw new Error('Invalid navigation deadline.');
   }
@@ -96,16 +79,15 @@ export class BrowserNavigationSession {
   connect = (): (() => void) => {
     this.disconnect?.();
     const store = usePhageStore.subscribe((next, previous) => {
-      if (this.selfWrite) return;
       if (this.operation) {
         const op = this.operation;
         const accepted = op.accepted;
         const valid = this.selection.getSnapshot().repository === op.repository && next.phages === op.phages
-          && (op.baseline ? samePosition(next, op.baseline)
-            : accepted && next.currentPhage === accepted.phage
-              ? next.currentPhageIndex === accepted.index && next.scrollPosition === 0 && next.selectedGeneId === null
-                && next.viewMode === op.origin.viewMode && next.readingFrame === op.origin.readingFrame
-              : samePosition(next, op.origin));
+          && (accepted && next.currentPhage === accepted.phage
+            ? next.currentPhageIndex === accepted.index && next.scrollPosition === op.entry.view.scrollPosition
+              && next.selectedGeneId === op.entry.view.geneId && next.viewMode === op.entry.view.viewMode
+              && next.readingFrame === op.entry.view.readingFrame
+            : samePosition(next, op.origin));
         if (!valid) this.cancel('View restoration stopped because you navigated or changed the view.');
         return;
       }
@@ -276,7 +258,7 @@ export class BrowserNavigationSession {
         ? 'This view requires the exact original local genome. Reimport its file or local workspace bundle first.'
         : 'This view requires one matching catalog genome. Reload the original catalog before restoring.');
       op = { controller: new AbortController(), repository: snapshot.repository, phages: origin.phages, origin,
-        originSelection: snapshot.selection, index: matches[0].index, accepted: null, source: null, baseline: null, timedOut: false };
+        originSelection: snapshot.selection, index: matches[0].index, accepted: null, source: null, entry, timedOut: false };
       this.operation = op; this.publish({ busy: true, error: null, notice: 'Verifying the complete genome and saved annotations…' });
       const owner = op;
       timer = setTimeout(() => { owner.timedOut = true; owner.controller.abort(); }, this.timeoutMs);
@@ -288,19 +270,13 @@ export class BrowserNavigationSession {
           if (!commandValuesEqual(source, entry.source)) throw new Error('The saved genome bases or annotations have changed. The current selection was preserved.');
           if (entry.view.geneId !== null && !candidate.phage.genes.some(gene => gene.id === entry.view.geneId)) throw new Error('The saved gene is absent from the exact source.');
           owner.accepted = candidate; owner.source = source;
+          return { viewMode: entry.view.viewMode, readingFrame: entry.view.readingFrame,
+            scrollPosition: entry.view.scrollPosition, selectedGeneId: entry.view.geneId };
         },
       });
       if (this.operation !== op) return false;
       if (!accepted || !op.accepted || !op.source) throw new Error(op.timedOut ? 'View restoration timed out. Retry when the genome is available.'
         : this.selection.getSnapshot().error?.message ?? 'The genome selection changed before restoration finished.');
-      op.baseline = usePhageStore.getState();
-      await wait(this.settle(), op.controller.signal);
-      if (this.operation !== op || !samePosition(usePhageStore.getState(), op.baseline)) throw aborted();
-      this.selfWrite = true;
-      try {
-        usePhageStore.setState({ viewMode: entry.view.viewMode, readingFrame: entry.view.readingFrame,
-          scrollPosition: entry.view.scrollPosition, selectedGeneId: entry.view.geneId });
-      } finally { this.selfWrite = false; }
       this.active = { repository: op.repository, phages: op.phages, selection: op.accepted, source: op.source };
       this.operation = null; this.scrollBurst = false;
       if (historyIndex === undefined) this.append(entry, false);

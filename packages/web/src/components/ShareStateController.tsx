@@ -144,8 +144,8 @@ export function ShareStateController({ selection }: { selection: PhageSelectionS
     if (active?.attempt.retrying) selection.cancel();
   }, [selection]);
 
-  // The normal selection lifecycle clears the previous gene in a layout effect.
-  // Apply the traversed view after that commit, and only for the still-owned selection.
+  // Ordinary selection clears the previous gene. Apply the traversed view only
+  // after its target is the current, fully loaded selection.
   useEffect(() => {
     if (!traversal || operation.current !== traversal || currentPhage?.id !== traversal.phageId
       || selection.getSnapshot().selection?.phage !== currentPhage || selection.getSnapshot().pendingIndex !== null) return;

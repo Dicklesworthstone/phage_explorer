@@ -21,6 +21,7 @@ import { useHotkeys, useKeyboardMode, usePendingSequence } from './hooks/useHotk
 import { useExperienceLevelSync, useBlockedHotkeyNotification } from './hooks/useExperienceLevelSync';
 import { useDiffReferenceSequence } from './hooks/useDiffReferenceSequence';
 import { PhageSelectionSession } from './hooks/PhageSelectionSession';
+import { commitExplorerSelection } from './components/SelectedGeneLifecycleController';
 import { BrowserNavigationSession } from './hooks/BrowserNavigationSession';
 import { ShareStateController } from './components/ShareStateController';
 import type { SelectedCdsSource } from '@phage-explorer/core';
@@ -126,16 +127,7 @@ export default function App(): React.ReactElement {
     load,
     reload,
   } = useDatabase({ autoLoad: true });
-  const [selectionSession] = useState(() => new PhageSelectionSession((next, previous) => {
-    const changed = next.selection !== previous.selection;
-    usePhageStore.setState({
-      currentPhage: next.selection?.phage ?? null,
-      currentPhageIndex: next.selection?.index ?? 0,
-      isLoadingPhage: next.pendingIndex !== null,
-      error: next.error?.message ?? null,
-      ...(changed ? { scrollPosition: 0, selectedGeneId: null } : {}),
-    });
-  }));
+  const [selectionSession] = useState(() => new PhageSelectionSession(commitExplorerSelection));
   const selectionSnapshot = useSyncExternalStore(selectionSession.subscribe, selectionSession.getSnapshot, selectionSession.getSnapshot);
   const [navigationSession] = useState(() => new BrowserNavigationSession(selectionSession));
   useEffect(() => navigationSession.connect(), [navigationSession]);
