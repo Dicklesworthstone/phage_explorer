@@ -44,7 +44,7 @@ describe('PCA analysis worker numerical contract', () => {
   it('keeps bias-window positions while removing the spurious second axis', async () => {
     const bytes = new TextEncoder().encode('AAAACCCCAAAACCCC');
     const result = (await api.computeBiasDecomposition({
-      sequenceRef: { buffer: bytes.buffer, byteOffset: 0, byteLength: bytes.length, length: bytes.length, encoding: 'ascii' },
+      sequenceRef: { buffer: bytes.buffer, byteOffset: 0, byteLength: bytes.length, length: bytes.length, encoding: 'ascii', isShared: false },
       windowSize: 4, stepSize: 4,
     }))!;
     // Each window consists entirely of AA or CC dinucleotides. The matrix has

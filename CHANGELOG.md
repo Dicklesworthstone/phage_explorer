@@ -6,6 +6,49 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Browser execution of portable research command plans
+
+- Import and review terminal-authored plans with their exact embedded genomes,
+  reference inputs and requested settings, then explicitly compute through the
+  same numerical producers used by native recording. Review does not change the
+  active workflow; saved views are computed without navigating the explorer.
+- Export the replayable command tape and every computed analysis in a complete
+  results archive. Fresh outputs remain labeled as a new baseline until replay;
+  the generated workflow can be loaded, its genomes added, and all outputs
+  recomputed through the existing browser verification controls.
+- Cancellation, a failed step or a late worker reply preserves the previous
+  completed plan output. Plans retain the 10 MiB/128-command limits; complete
+  archives retain the 32 MiB limit.
+  [Browser workflow steps](README.md#run-command-plans-in-the-browser).
+
+### Measured initial infected cohorts in growth experiments
+
+- Growth conditions now accept an independently supplied `initialInfected`
+  population alongside susceptible cells and extracellular infectious phage.
+  The cohort enters infection stage 1 at time zero and contributes to intact-cell
+  OD and subsequent progeny release.
+- Browser controls and native fitting/profile workflows preserve the cohort in
+  input identity, exports and fresh replay. Positive-cohort fits/profiles use
+  method versions 3/4 for exact/censored observations; existing zero-cohort
+  versions 1/2 remain unchanged.
+- Cohort concentration and initial infection age are fixed assumptions.
+  Concentration uncertainty and unknown infection-age distributions are not
+  inferred; adsorption remains unidentifiable without susceptible cells.
+  [Conditions and limits](README.md#measured-growth-inference).
+  [Implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/dba88461850653cc1c69e313ce2135d3c5ad6a67).
+
+### Inspect and export observed partial GenBank CDS
+
+- Partial `<start..end` and `start..>end` annotations retain their observed DNA
+  spans, including joined and reverse-strand features. Biological 5′/3′
+  completeness follows strand through imports, local bundles and catalog snapshots.
+- CDS DNA FASTA and JSON exports preserve partial-end labels. Complete-protein
+  predictions, whole-gene adaptation scores and coding consequences remain
+  unavailable for incomplete annotations; unknown internal join boundaries
+  cannot supply an exact transcript.
+  [CDS coverage and limits](docs/CDS_CONSEQUENCES_WORKFLOW.md).
+  [Implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/94f24f4dce893514f12f9cd8921036b7a85e8ae9).
+
 ### Native creation of supplied integration and excision experiments
 
 - `workflow analyze-attachment` and `workflow analyze-excision` create complete

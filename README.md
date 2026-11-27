@@ -714,6 +714,19 @@ latency and burst parameters to estimate. Fits retain observations, trajectories
 convergence checks and parameter-specific uncertainty status for export and fresh
 replay.
 
+For experiments that begin with freshly infected cells, set **Initially infected
+cells/mL (start of stage 1)** or the optional `conditions.initialInfected` field
+in dataset JSON. This independently supplied cohort starts at the beginning of
+the infection-stage chain at time zero. `initialBacteria` counts susceptible
+cells only; `initialPhage` counts extracellular infectious phage. OD includes
+intact susceptible and infected cells. Omitting the cohort or setting it to zero
+keeps the initially uninfected model.
+
+The cohort concentration is fixed, not estimated from multiplicity of infection.
+Its uncertainty is not propagated, and the setting does not recover an unknown
+infection age or age distribution. With no susceptible cells, adsorption cannot
+be estimated and should remain fixed.
+
 The standard header is `timeMin,type,value,sigma`. An optional final `censoring`
 column accepts `none` for quantified observations and `left` for a PFU/CFU count
 reported below a known positive assay limit. For example,
@@ -731,8 +744,10 @@ data, numerical support and resolved likelihood crossings. Failed or unsupported
 intervals remain unavailable. These are conditional model estimates, with supplied
 independent error scales; they do not establish a biologically validated phenotype
 or global identifiability. Right/interval censoring and censored OD are unsupported.
-Existing exact-only fit/profile records retain their version-1 replay identities;
-censored analyses use version 2.
+Existing zero-cohort exact-only fit/profile records retain their version-1 replay
+identities, and zero-cohort censored analyses retain version 2. A positive initial
+infected cohort uses version 3 for exact-only fits/profiles or version 4 with
+censoring, preserving the initial-population model in exported and replayed evidence.
 
 ### Protein Structure & Function
 
@@ -1289,6 +1304,33 @@ support export and recomputed restoration. Research workflows record only the
 explicit actions in their panel; actions in other panels are not recorded.
 Broader overlay coverage, TUI evidence display and complete action replay remain
 open work.
+
+### Run command plans in the browser
+
+The browser can compute portable plans authored by the terminal workflow editor
+or native workflow commands. A `phage-explorer-command-plan` contains exact
+private inputs and requested actions, without recorded output expectations.
+
+1. Open **Local genomes: import or export** and find **Saved research workflows**
+   → **Run a command plan**. Choose the file with **Review command plan JSON**.
+2. Inspect the embedded genome identities, requested commands and parameters.
+   Review does not run analyses, add genomes or replace the active workflow.
+3. Choose **Compute command plan**. The run uses the plan's embedded inputs and
+   the same numerical producers as native recording. Saved views are recorded
+   without moving the explorer.
+4. Use **Export computed workflow** for the replayable command tape and
+   **Export all computed results** for every numerical record, including results
+   preceding a final navigation command. These are newly computed baselines;
+   they have not yet passed replay verification.
+5. Choose **Load computed workflow for replay**, then **Add workflow genomes**
+   and **Replay and verify loaded complete results**. This recomputes the
+   recorded outputs through the existing browser workflow.
+
+Plans are limited to 10 MiB and 128 commands; complete-result archives are limited
+to 32 MiB. **Cancel current work** stops a running plan. Cancellation or a failed
+step preserves the preceding completed plan output. Downloads include the
+embedded private genome and reference inputs; this workflow does not upload
+them or automatically save them to browser storage.
 
 ### Composable UI Primitives
 

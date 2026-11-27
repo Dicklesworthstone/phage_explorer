@@ -2,6 +2,10 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { serializeAnalysisRecord, parseAnalysisRecord, createAnalysisRecord } from '@phage-explorer/core';
 import { executeResearchRequest } from './research-workflow.worker';
+import { importLocalGenomes, exportLocalGenomeBundle } from '../../../core/src/genome-import';
+import { serializeCommandPlan, type CommandPlan } from '../../../core/src/command-session';
+import { parseWorkflowResults, workflowResultIndex } from '../../../core/src/workflow-results';
+import { recordResearchPlan, replayResearchTape } from '../../../tui/src/research-replay';
 import { replaySpacerRecord, type SpacerGenome, type SpacerLibrary, type ReferenceSpacerHit } from '../../../core/src/analysis/spacer-reference';
 
 // Independently located 20-base targets: forward [4,24), reverse [34,54).
@@ -122,5 +126,124 @@ describe('research worker real CDS pipeline', () => {
     if (parsed.type !== 'parsed') throw new Error('Expected parse');
     await assert.rejects(executeResearchRequest({ type: 'codons', genome: parsed.result.genomes[0], geneId: null }), /No supported CDS/);
     await assert.rejects(executeResearchRequest({ type: 'parse', input: { name: 'bad.gb', text: 'not a genome' } }));
+  });
+});
+
+describe('browser command plan authoring', () => {
+  async function fixture() {
+    const parsed = await importLocalGenomes({ name: 'private-plan.fa', text: '>PLAN_CONTROL\nNNNNGGCCGGGG\n' });
+    const contentId = parsed.genomes[0].phage.localGenome!.contentId;
+    const plan: CommandPlan = { format: 'phage-explorer-command-plan', version: 1, name: 'Private composition plan',
+      context: { bundle: exportLocalGenomeBundle(parsed.genomes) }, commands: [
+        { actionId: 'overlay.gcSkew', parameters: { contentId, windowSize: 4, stepSize: 4 } },
+        { actionId: 'overlay.gcSkew', parameters: { contentId, windowSize: 6, stepSize: 6 } },
+        { actionId: 'nav.goto', parameters: { contentId, geneId: null, viewMode: 'dna', readingFrame: 0, scrollPosition: 4 } },
+      ] };
+    return { plan, content: serializeCommandPlan(plan), parsed };
+  }
+
+  it('reviews the complete plan and exact embedded sources without executing analyses', async () => {
+    const { content, plan, parsed } = await fixture();
+    const review = await executeResearchRequest({ type: 'plan-review', content });
+    assert.equal(review.type, 'plan-reviewed');
+    if (review.type !== 'plan-reviewed') throw new Error('Expected plan review');
+    assert.deepEqual(review.plan, plan);
+    assert.deepEqual(review.genomes, [{ contentId: parsed.genomes[0].phage.localGenome!.contentId,
+      accession: 'PLAN_CONTROL', bases: 12, mappedFeatures: 0 }]);
+    assert.equal('result' in review, false);
+    assert.equal('record' in review, false);
+    assert(review.plan.commands.every(command => !('expected' in command)));
+  });
+
+  it('records all numerical outputs, preserves a navigation tail, and produces native-replayable archives', async () => {
+    const { content, plan } = await fixture();
+    const output = await executeResearchRequest({ type: 'plan-record', content });
+    if (output.type !== 'plan-recorded') throw new Error('Expected completed plan');
+    const { report, tapeJson, allResultsJson } = output.result;
+    assert.equal(report.completed, 3);
+    assert.equal(report.lastAnalysisExecution, 2);
+    assert.equal(report.steps[2].analysis, null);
+    assert.deepEqual(report.finalView, plan.commands[2].parameters);
+    assert.equal('verified' in report, false, 'Fresh authoring must not claim replay verification');
+    const archive = await parseWorkflowResults(allResultsJson);
+    assert.equal(archive.records.length, 2);
+    assert.deepEqual(archive.records.map(record => record.parameters), [
+      { stepSize: 4, windowSize: 4 }, { stepSize: 6, windowSize: 6 },
+    ]);
+    assert.deepEqual(archive.records[0].fields.windows.value, [
+      { start: 0, end: 4, g: 0, c: 0, resolvedBases: 0, skew: null, cumulative: 0 },
+      { start: 4, end: 8, g: 2, c: 2, resolvedBases: 4, skew: 0, cumulative: 1 },
+      { start: 8, end: 12, g: 4, c: 0, resolvedBases: 4, skew: 1, cumulative: 1 },
+    ]);
+    assert.deepEqual(archive.records[1].fields.windows.value, [
+      { start: 0, end: 6, g: 2, c: 0, resolvedBases: 2, skew: 1, cumulative: 0 },
+      { start: 6, end: 12, g: 4, c: 2, resolvedBases: 6, skew: 1 / 3, cumulative: 1 },
+    ]);
+    assert(archive.records.every(record => record.inputs[0].data === 'NNNNGGCCGGGG'));
+    assert.deepEqual(workflowResultIndex(tapeJson, 1).map(entry => entry.analysis?.resultId ?? null),
+      [archive.records[0].resultId, archive.records[1].resultId, null]);
+    const native = await recordResearchPlan(content, { captureResults: true });
+    assert.equal(native.tapeJson, tapeJson);
+    assert.equal(native.allResultsJson, allResultsJson);
+    const replay = await replayResearchTape(tapeJson, { captureResults: true });
+    assert.equal(replay.allResultsJson, allResultsJson);
+    assert.equal(replay.report.verified, true);
+  });
+
+  it('rejects recorded expectations, unsupported later commands and malformed sources during review', async () => {
+    const { plan } = await fixture();
+    const unsupported = structuredClone(plan); unsupported.commands[2].actionId = 'run.arbitraryCode';
+    const expectations = structuredClone(plan) as unknown as { commands: Array<{ expected?: unknown }> };
+    expectations.commands[0].expected = { resultId: 'forged' };
+    const malformed = { ...plan, context: { bundle: '{"format":"not-a-genome"}' } };
+    for (const invalid of [unsupported, expectations, malformed, { ...plan, format: 'phage-explorer-commands' }]) {
+      await assert.rejects(executeResearchRequest({ type: 'plan-review', content: JSON.stringify(invalid) }));
+    }
+    await assert.rejects(executeResearchRequest({ type: 'plan-record', content: serializeCommandPlan(unsupported) }), /Step 3.*unsupported|Step 3.*adapter/i);
+    await assert.rejects(executeResearchRequest({ type: 'plan-record',
+      content: serializeCommandPlan({ ...plan, commands: [] }) }), /no planned commands/i);
+  });
+
+  it('fails the exact step for a missing input and returns no partially recorded plan', async () => {
+    const { plan } = await fixture();
+    plan.commands[1].parameters = { contentId: 'f'.repeat(64), windowSize: 6, stepSize: 6 };
+    await assert.rejects(executeResearchRequest({ type: 'plan-record', content: serializeCommandPlan(plan) }),
+      /Step 2.*outside the recorded input bundle/);
+  });
+
+  it('terminates cancelled whole-plan work and ignores its late result before allowing a fresh worker', async () => {
+    const { runResearchWorker } = await import('../components/overlays/ResearchWorkflowPanel');
+    const { content } = await fixture();
+    const output = await executeResearchRequest({ type: 'plan-record', content });
+    const original = globalThis.Worker;
+    const workers: ControlledWorker[] = [];
+    class ControlledWorker {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: ((event: ErrorEvent) => void) | null = null;
+      onmessageerror: ((event: MessageEvent) => void) | null = null;
+      terminated = false;
+      request: unknown = null;
+      constructor() { workers.push(this); }
+      postMessage(request: unknown) { this.request = structuredClone(request); }
+      terminate() { this.terminated = true; }
+    }
+    globalThis.Worker = ControlledWorker as unknown as typeof Worker;
+    try {
+      const cancelled = new AbortController();
+      const first = runResearchWorker({ type: 'plan-record', content }, cancelled.signal);
+      const rejection = assert.rejects(first, { name: 'AbortError' });
+      const late = workers[0].onmessage!;
+      cancelled.abort();
+      await rejection;
+      assert.equal(workers[0].terminated, true);
+      assert.equal(workers[0].onmessage, null);
+      const second = runResearchWorker({ type: 'plan-record', content }, new AbortController().signal);
+      late({ data: { type: 'result', result: output } } as MessageEvent);
+      assert.equal(workers[1].terminated, false);
+      workers[1].onmessage!({ data: { type: 'result', result: output } } as MessageEvent);
+      assert.deepEqual(await second, output);
+      assert.equal(workers[1].terminated, true);
+      assert.deepEqual(workers[1].request, { type: 'plan-record', content });
+    } finally { globalThis.Worker = original; }
   });
 });

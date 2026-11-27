@@ -2,6 +2,8 @@
 import { importLocalGenomes, type GenomeInput, type LocalGenome, type GenomeImportResult } from '../../../core/src/genome-import';
 import { createReferenceCodonExperiment, referenceGenomeFromPhage, type ReferenceCodonOptions } from '../../../core/src/analysis/codon-reference';
 import type { AnalysisRecord } from '../../../core/src/analysis-result';
+import type { CommandPlan } from '../../../core/src/command-session';
+import type { ResearchRecordingResult, ResearchTapeInspection } from '../../../tui/src/research-replay';
 import type { ComparisonGenomeInput, GenomeComparisonOptions } from '../../../comparison/src/comparison-experiment';
 import type { SyntenyExperimentInput } from '../../../comparison/src/synteny-experiment';
 
@@ -16,6 +18,8 @@ import { searchSpacerReferences, createSpacerRecord, type SpacerGenome, type Spa
   type SpacerSearchOptions } from '../../../core/src/analysis/spacer-reference';
 
 export type ResearchWorkerRequest = { type: 'parse'; input: GenomeInput } |
+  { type: 'plan-review'; content: string } |
+  { type: 'plan-record'; content: string } |
   { type: 'rna'; request: RNAStructureRequest } |
   { type: 'phylogeny'; source: PangenomePhylogenySource; options: PhylogenyOptions } |
   { type: 'spacers'; genome: SpacerGenome; library: SpacerLibrary; options: SpacerSearchOptions } |
@@ -30,9 +34,32 @@ export type ResearchWorkerRequest = { type: 'parse'; input: GenomeInput } |
   { type: 'restriction-digest'; sequence: string; options: RestrictionDigestOptions; context: { accession: string | null; source: 'local' | 'catalog' } } |
   { type: 'restriction-digest-replay'; content: string } |
   { type: 'exact-repeats'; genome: LocalGenome; options: ResolvedExactRepeatOptions };
-export type ResearchWorkerResult = { type: 'parsed'; result: GenomeImportResult } | { type: 'analysis'; record: AnalysisRecord };
+export type ResearchWorkerResult = { type: 'parsed'; result: GenomeImportResult } | { type: 'analysis'; record: AnalysisRecord } |
+  { type: 'plan-reviewed'; plan: CommandPlan; genomes: ResearchTapeInspection['genomes'] } |
+  { type: 'plan-recorded'; result: ResearchRecordingResult & { allResultsJson: string } };
 
 export async function executeResearchRequest(request: ResearchWorkerRequest): Promise<ResearchWorkerResult> {
+  if (request.type === 'plan-review') {
+    // This host uses the same canonical adapters as native recording and has no
+    // filesystem, renderer or network dependencies. Review computes no analysis.
+    const { validateResearchPlan } = await import('../../../tui/src/research-replay');
+    const plan = validateResearchPlan(request.content);
+    const context = plan.context as { bundle: string };
+    const parsed = await importLocalGenomes({ name: 'workflow-genomes.json', text: context.bundle });
+    return { type: 'plan-reviewed', plan, genomes: parsed.genomes.map(genome => ({
+      contentId: genome.phage.localGenome!.contentId, accession: genome.phage.accession,
+      bases: genome.sequence.length, mappedFeatures: genome.phage.genes.length,
+    })) };
+  }
+  if (request.type === 'plan-record') {
+    // Run the existing isolated authoring host off-thread. It validates the
+    // whole plan first and returns no partial tape/archive on failure. Aborting
+    // runResearchWorker terminates this worker, including synchronous CPU work.
+    const { recordResearchPlan } = await import('../../../tui/src/research-replay');
+    const result = await recordResearchPlan(request.content, { captureResults: true });
+    if (result.allResultsJson === undefined) throw new Error('The command plan did not produce complete results.');
+    return { type: 'plan-recorded', result: { ...result, allResultsJson: result.allResultsJson } };
+  }
   if (request.type === 'parse') return { type: 'parsed', result: await importLocalGenomes(request.input) };
   if (request.type === 'comparison') {
     const { createGenomeComparisonExperiment } = await import('../../../comparison/src/comparison-experiment');

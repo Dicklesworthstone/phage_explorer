@@ -221,6 +221,11 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const research = useSyncExternalStore(workflow.subscribe, workflow.getSnapshot, workflow.getSnapshot);
   const [resultExecution, setResultExecution] = useState('');
   const [archiveReview, setArchiveReview] = useState<{ content: string; repetitions: number; records: number } | null>(null);
+  const [planReview, setPlanReview] = useState<{
+    content: string; review: Extract<ResearchWorkerResult, { type: 'plan-reviewed' }>;
+  } | null>(null);
+  const [planRun, setPlanRun] = useState<Extract<ResearchWorkerResult, { type: 'plan-recorded' }>['result'] | null>(null);
+  const [planNotice, setPlanNotice] = useState('');
   const [resultNotice, setResultNotice] = useState('');
   const completedRun = research.completeResults;
   const runDetails = useMemo(() => completedRun ? {
@@ -526,6 +531,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const cancel = () => {
     inputOperation.current?.abort(); inputOperation.current = null; setInputBusy(false); workflow.commands.cancel();
     setResultNotice('Cancelled. Previously accepted complete results are unchanged.');
+    setPlanNotice('Cancelled. The last completed plan output remains available.');
   };
   const load = async (file: File | undefined) => {
     if (!file) return;
@@ -539,6 +545,62 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       setReview(parsed); setArchiveReview(null);
     } catch (cause) { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { if (inputOperation.current === controller) { inputOperation.current = null; setInputBusy(false); } }
+  };
+  const loadPlan = async (file: File | undefined) => {
+    if (!file || busy || active) return;
+    inputOperation.current?.abort(); const controller = new AbortController(); inputOperation.current = controller;
+    setInputBusy(true); setError(null); setPlanNotice('Checking every command and reading the embedded inputs.');
+    try {
+      const content = await readLocalTextFile(file, 10 * 1024 * 1024, controller.signal);
+      if (inputOperation.current !== controller || controller.signal.aborted) return;
+      const reviewed = await runResearchWorker({ type: 'plan-review', content }, controller.signal);
+      if (inputOperation.current !== controller || controller.signal.aborted) return;
+      if (reviewed.type !== 'plan-reviewed') throw new Error('Expected command plan review.');
+      setPlanReview({ content, review: reviewed });
+      setPlanNotice('Plan reviewed. No commands ran and the active workflow was not replaced.');
+    } catch (cause) {
+      if (inputOperation.current === controller && !controller.signal.aborted) {
+        setError(cause instanceof Error ? cause.message : 'Command plan could not be read.');
+        setPlanNotice('Review failed. The preceding reviewed plan and completed output are unchanged.');
+      }
+    } finally {
+      if (inputOperation.current === controller) { inputOperation.current = null; setInputBusy(false); }
+    }
+  };
+  const recordPlan = () => {
+    if (busy || active || !planReview || !planReview.review.plan.commands.length) return;
+    inputOperation.current?.abort(); const controller = new AbortController(); inputOperation.current = controller;
+    setInputBusy(true); setError(null); setPlanNotice('Computing the reviewed plan from its embedded inputs. The previous completed output remains available.');
+    const task = runResearchWorker({ type: 'plan-record', content: planReview.content }, controller.signal);
+    void task.then(output => {
+      if (inputOperation.current !== controller || controller.signal.aborted) return;
+      if (output.type !== 'plan-recorded') throw new Error('Expected a complete recorded command plan.');
+      setPlanRun(output.result);
+      setPlanNotice('Every planned command completed. These fresh outputs form a new baseline; load the recorded workflow and replay it to verify the results.');
+    }).catch(cause => {
+      if (inputOperation.current === controller && !controller.signal.aborted) {
+        setError(cause instanceof Error ? cause.message : 'Command plan failed.');
+        setPlanNotice('The plan produced no complete output. The last completed plan output was not replaced.');
+      }
+    }).finally(() => {
+      if (inputOperation.current === controller) { inputOperation.current = null; setInputBusy(false); }
+    });
+  };
+  const loadPlannedWorkflow = async () => {
+    if (busy || active || !planRun) return;
+    inputOperation.current?.abort(); const controller = new AbortController(); inputOperation.current = controller;
+    setInputBusy(true); setError(null);
+    try {
+      const reviewed = await workflow.loadResultsAndReview(planRun.allResultsJson, controller.signal);
+      if (inputOperation.current !== controller || controller.signal.aborted) return;
+      setName(workflow.commands.getSnapshot().tape.name); setReview(reviewed.inputs); setCollisions(false);
+      setArchiveReview({ content: planRun.allResultsJson, repetitions: reviewed.repetitions, records: reviewed.records });
+      setResultNotice('Fresh plan outputs loaded for review. Add the bundled genomes, then replay and verify all results.');
+    } catch (cause) {
+      if (inputOperation.current === controller && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Computed workflow could not be loaded.');
+    } finally {
+      if (inputOperation.current === controller) { inputOperation.current = null; setInputBusy(false); }
+    }
   };
   const loadResults = async (file: File | undefined) => {
     if (!file || busy || active) return;
@@ -632,6 +694,42 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       <button type="button" disabled={busy || !active} onClick={() => invoke(workflow.commands.stop)}>Stop workflow recording</button>
       <button type="button" disabled={busy || active || !state.tape.commands.length} onClick={() => invoke(() => downloadString(workflow.commands.export(), 'research-workflow.json', 'application/json'))}>Export research workflow</button></div>
     <label>Load research workflow JSON <input type="file" accept=".json,application/json" disabled={busy || active} onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; void load(file); }} /></label>
+    <section aria-label="Command plan authoring" style={{ border: '1px solid var(--color-border)', padding: '.75rem', display: 'grid', gap: '.5rem' }}>
+      <h4>Run a command plan</h4>
+      <p>Import a plan composed in the terminal or with the workflow command. Plans contain inputs and requested settings, without recorded output expectations.
+        Review first, then compute from the embedded inputs using the same numerical methods. Saved views are recorded without moving the explorer.</p>
+      <label>Review command plan JSON (up to 10 MiB)
+        <input type="file" accept=".json,application/json" disabled={busy || active} onChange={event => {
+          const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; void loadPlan(file);
+        }} /></label>
+      {planReview && <div data-testid="workflow-plan-review">
+        <p><strong>{planReview.review.plan.name}</strong> · {planReview.review.plan.commands.length} requested commands · {planReview.review.genomes.length} embedded genomes.</p>
+        <ul aria-label="Command plan genomes">{planReview.review.genomes.map(source => <li key={source.contentId}>
+          {source.accession} · {source.bases} bases · {source.mappedFeatures} mapped features · <code>{source.contentId.slice(0, 12)}</code>
+        </li>)}</ul>
+        <ol aria-label="Planned workflow commands">{planReview.review.plan.commands.map((command, index) => <li key={index}>
+          {ActionRegistry[command.actionId as keyof typeof ActionRegistry]?.title ?? command.actionId}
+          <details><summary>Requested parameters</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '12rem', overflow: 'auto' }}>
+            {JSON.stringify(command.parameters, (key, value: unknown) => (key === 'referenceText' || key === 'libraryText') && typeof value === 'string'
+              ? `[${value.length} embedded characters; preserved in the original plan]` : value, 2)}
+          </pre></details>
+        </li>)}</ol>
+        {!planReview.review.plan.commands.length && <p>This is an empty draft. Add commands before running it.</p>}
+        <button type="button" disabled={busy || active || !planReview.review.plan.commands.length} onClick={recordPlan}>Compute command plan</button>
+      </div>}
+      <button type="button" disabled={!inputBusy} onClick={cancel}>Cancel current work</button>
+      <p role="status" data-testid="workflow-plan-status">{planNotice}</p>
+      {planRun && <div data-testid="workflow-plan-output">
+        <p>Completed plan: <strong>{planRun.report.name}</strong> · {planRun.report.completed} commands. These are newly recorded outputs, pending replay verification.</p>
+        <ol aria-label="Computed plan outputs">{planRun.report.steps.map(step => <li key={step.execution}>
+          Step {step.step}: {step.analysis?.method.id ?? 'Saved view'}{step.analysis ? ` · result ${step.analysis.resultId.slice(0, 12)}` : ''}
+        </li>)}</ol>
+        <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(planRun.tapeJson, 'computed-research-workflow.json', 'application/json'))}>Export computed workflow</button>
+        <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(planRun.allResultsJson, 'computed-workflow-results.json', 'application/json'))}>Export all computed results</button>
+        <button type="button" disabled={busy || active} onClick={() => { void loadPlannedWorkflow(); }}>Load computed workflow for replay</button>
+        <p>Both exports retain the original private genome bundle and reference inputs. No data is uploaded or saved to browser storage automatically.</p>
+      </div>}
+    </section>
     {review && <div><p>{review.genomes.length} bundled genomes validated. Adding them is separate from running any recorded command.</p>
       <label><input type="checkbox" checked={collisions} onChange={event => setCollisions(event.target.checked)} /> Keep distinct records with matching accessions</label>
       <button type="button" disabled={busy || active} onClick={() => invoke(() => { useLocalGenomes.getState().add(review, collisions, usePhageStore.getState().phages); setReview(null); })}>Add workflow genomes</button></div>}

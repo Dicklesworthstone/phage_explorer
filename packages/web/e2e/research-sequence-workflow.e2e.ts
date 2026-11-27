@@ -2,7 +2,8 @@ import { test as base, expect, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig, type UserConfig } from 'vite';
-import { parseCommandTape, serializeCommandTape } from '../../core/src/command-session';
+import { parseCommandTape, serializeCommandTape, serializeCommandPlan, type CommandPlan } from '../../core/src/command-session';
+import { importLocalGenomes, exportLocalGenomeBundle } from '../../core/src/genome-import';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord } from '../../core/src/analysis-result';
 import { parseWorkflowResults, workflowAnalysisAt } from '../../core/src/workflow-results';
 import type { SpacerLibrary, ReferenceSpacerHit } from '../../core/src/analysis/spacer-reference';
@@ -83,7 +84,7 @@ const test = base.extend<{ workflowFixture: void }>({
               constructor(url, options) {
                 super(url, options);
                 this.addEventListener('message', event => {
-                  if (!window.holdWorkflowReply || event.data?.result?.type !== 'analysis') return;
+                  if (!window.holdWorkflowReply || !['analysis', 'plan-recorded'].includes(event.data?.result?.type)) return;
                   window.holdWorkflowReply = false;
                   window.workflowReplyHeld = true;
                   const data = event.data;
@@ -565,4 +566,60 @@ test('cancelled replacement and invalid import preserve the accepted complete ru
   await page.getByLabel('Load complete workflow results JSON (up to 32 MiB)', { exact: true }).setInputFiles({ name: 'incomplete.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(changed)) });
   await expect(page.getByRole('alert')).toContainText('missing analyses');
   expect(await download(page, 'Export complete workflow results JSON')).toBe(content);
+});
+
+test('reviews and computes an imported command plan, preserves completed outputs on cancellation, and verifies the generated workflow', async ({ page }) => {
+  const parsed = await importLocalGenomes({ name: 'private-plan.fa', text: '>PLAN_CONTROL\nNNNNGGCCGGGG\n' });
+  const contentId = parsed.genomes[0].phage.localGenome!.contentId;
+  const plan: CommandPlan = { format: 'phage-explorer-command-plan', version: 1, name: 'Private browser command plan',
+    context: { bundle: exportLocalGenomeBundle(parsed.genomes) }, commands: [
+      { actionId: 'overlay.gcSkew', parameters: { contentId, windowSize: 4, stepSize: 4 } },
+      { actionId: 'overlay.gcSkew', parameters: { contentId, windowSize: 6, stepSize: 6 } },
+    ] };
+  await page.getByLabel('Review command plan JSON (up to 10 MiB)', { exact: true }).setInputFiles({
+    name: 'private-plan.json', mimeType: 'application/json', buffer: Buffer.from(serializeCommandPlan(plan)),
+  });
+  await expect(page.getByTestId('workflow-plan-review')).toContainText('2 requested commands');
+  await expect(page.getByTestId('workflow-plan-review')).toContainText('PLAN_CONTROL');
+  await expect(page.getByTestId('workflow-status')).toContainText('0 recorded commands');
+  await expect(page.getByTestId('workflow-plan-output')).toHaveCount(0);
+  const compute = page.getByRole('button', { name: 'Compute command plan', exact: true });
+  await compute.click();
+  await expect(page.getByTestId('workflow-plan-output')).toContainText('2 commands');
+  await expect(page.getByTestId('workflow-plan-output')).toContainText('pending replay verification');
+  await expect(page.getByTestId('workflow-status')).toContainText('0 recorded commands');
+  const tape = await download(page, 'Export computed workflow');
+  const archiveJson = await download(page, 'Export all computed results');
+  const archive = await parseWorkflowResults(archiveJson);
+  expect(archive.tapeJson).toBe(tape);
+  expect(archive.records).toHaveLength(2);
+  expect(archive.records[0].fields.windows.value).toEqual([
+    { start: 0, end: 4, g: 0, c: 0, resolvedBases: 0, skew: null, cumulative: 0 },
+    { start: 4, end: 8, g: 2, c: 2, resolvedBases: 4, skew: 0, cumulative: 1 },
+    { start: 8, end: 12, g: 4, c: 0, resolvedBases: 4, skew: 1, cumulative: 1 },
+  ]);
+
+  await page.evaluate(() => { (window as unknown as WorkflowFixture).holdWorkflowReply = true; });
+  await compute.click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as WorkflowFixture).workflowReplyHeld)).toBe(true);
+  await page.getByRole('button', { name: 'Cancel current work', exact: true }).click();
+  await page.evaluate(() => (window as unknown as WorkflowFixture).releaseWorkflowReply());
+  expect(await download(page, 'Export all computed results')).toBe(archiveJson);
+
+  const missing = structuredClone(plan);
+  missing.commands[1].parameters = { contentId: 'f'.repeat(64), windowSize: 6, stepSize: 6 };
+  await page.getByLabel('Review command plan JSON (up to 10 MiB)', { exact: true }).setInputFiles({
+    name: 'missing-source-plan.json', mimeType: 'application/json', buffer: Buffer.from(serializeCommandPlan(missing)),
+  });
+  await expect(page.getByTestId('workflow-plan-status')).toContainText('Plan reviewed');
+  await compute.click();
+  await expect(page.getByRole('alert')).toContainText('Step 2');
+  expect(await download(page, 'Export all computed results')).toBe(archiveJson);
+
+  await page.getByRole('button', { name: 'Load computed workflow for replay', exact: true }).click();
+  await expect(page.getByTestId('workflow-status')).toContainText('2 recorded commands');
+  await page.getByRole('button', { name: 'Add workflow genomes', exact: true }).click();
+  await page.getByRole('button', { name: 'Replay and verify loaded complete results', exact: true }).click();
+  await expect(page.getByTestId('workflow-results-status')).toContainText('numerical output was verified');
+  expect(await download(page, 'Export complete workflow results JSON')).toBe(archiveJson);
 });
