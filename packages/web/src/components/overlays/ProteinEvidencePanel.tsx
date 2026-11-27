@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { serializeAnalysisRecord } from '../../../../core/src/analysis-result';
-import type { ProteinReferenceBundle, ProteinReferenceInputs, ProteinAlignmentInput } from '../../../../core/src/protein-reference';
+import { prepareProteinCoordinateInput, type ProteinCoordinateInput, type ProteinReferenceBundle, type ProteinReferenceInputs, type ProteinAlignmentInput } from '../../../../core/src/protein-reference';
 import type { PhageFull } from '../../../../core/src/types';
 import { exportProteinStructureTsv, exportProteinAlignmentTsv, type ProteinStructureOptions,
-  type ProteinAlignmentExperiment } from '../../../../core/src/analysis/tail-fiber-structure';
+  type ProteinAlignmentExperiment, exportProteinCoordinateTsv, type ProteinCoordinateExperiment } from '../../../../core/src/analysis/tail-fiber-structure';
 import { ProteinEvidenceSession, readProteinEvidenceFile, type ProteinEvidenceExperiment, type ProteinEvidenceOrigin } from '../../workers/ProteinEvidenceSession';
 import { OverlayStatCard, OverlayStatGrid } from './primitives';
 
@@ -232,6 +232,183 @@ function ProteinAlignmentWorkbench({ context }: { context: object }): React.Reac
   </section>;
 }
 
+/** Standalone local geometry never borrows the selected genome's identity. */
+export function ProteinCoordinateResults({ experiment, verified }: {
+  experiment: ProteinCoordinateExperiment; verified: boolean;
+}): React.ReactElement {
+  const { input, result, record, options } = experiment;
+  const [start, setStart] = useState(1), [error, setError] = useState<string | null>(null);
+  useEffect(() => { setStart(1); setError(null); }, [record.resultId]);
+  const first = Math.max(1, Math.min(result.protein.length, Number.isSafeInteger(start) ? start : 1));
+  const rows = result.residues.slice(first - 1, first + 24);
+  const filename = 'protein-coordinates-' + result.protein.id.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80) + '-' + record.resultId.slice(0, 12);
+  const save = (kind: 'json' | 'input' | 'residues' | 'contacts') => {
+    try {
+      const text = kind === 'json' ? serializeAnalysisRecord(record) : kind === 'input' ? JSON.stringify(input, null, 2) : exportProteinCoordinateTsv(record, kind);
+      download(text, filename + (kind === 'json' ? '.json' : kind === 'input' ? '-input.json' : '-' + kind + '.tsv'),
+        kind === 'json' || kind === 'input' ? 'application/json' : 'text/tab-separated-values');
+      setError(null);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+  };
+  return <section aria-label="Local mmCIF geometry results">
+    <h4>{input.name}: supplied protein coordinates</h4>
+    <p>{verified ? 'Fresh replay verified.' : 'Fresh analysis.'} Protein record: {result.protein.id}.
+      {' '}{input.source.kind === 'demo' ? 'User-declared teaching coordinates.' : 'User-supplied local coordinates.'}
+      {' '}No current genome, accession or genomic CDS mapping is implied.</p>
+    <p>Declared source: {input.source.description}. Reference: {input.source.reference ?? 'No citation supplied'}.</p>
+    <p>Label chain {result.structure.labelAsymId}; author chain {result.structure.authAsymId}; model {result.structure.model};
+      {' '}alternate location {result.structure.alternateLocation ?? 'unambiguous atoms only'}.
+      {' '}Polymer label position 1 maps to protein position {result.structure.proteinStart}.</p>
+    <OverlayStatGrid columns={3}>
+      <OverlayStatCard label="Supplied C-alpha residues" value={result.coverage.coordinateResidues + ' / ' + result.protein.length} />
+      <OverlayStatCard label="Residues without coordinates" value={result.coverage.unmappedResidues} />
+      <OverlayStatCard label="Within-chain contact pairs" value={result.coverage.intrachainContacts} />
+    </OverlayStatGrid>
+    <p>Cutoff {options.contactCutoffAngstrom} Å; minimum polymer separation {options.minSequenceSeparation} residues.
+      {' '}{result.structure.omittedAlternateAtoms} alternate atoms omitted; {result.structure.zeroOccupancyAtoms} zero-occupancy atoms omitted.
+      {' '}Other chains and models are not compared. Missing coordinates stay unavailable; zero neighbors means no eligible pair met the cutoff.</p>
+    <div style={{ display: 'flex', gap: '.5rem', flexWrap: 'wrap' }}>
+      <button type="button" onClick={() => save('json')}>Export local coordinate experiment JSON</button>
+      <button type="button" onClick={() => save('input')}>Export prepared coordinate input JSON</button>
+      <button type="button" onClick={() => save('residues')}>Export local coordinate residue TSV</button>
+      <button type="button" onClick={() => save('contacts')}>Export local coordinate contact TSV</button>
+    </div>
+    {error && <p role="alert">{error}</p>}
+    <label>First local protein residue <input aria-label="First local protein residue" type="number" min={1} max={result.protein.length}
+      value={first} onChange={event => setStart(Number(event.target.value))} /></label>
+    <button type="button" disabled={first === 1} onClick={() => setStart(Math.max(1, first - 25))}>Previous local residues</button>
+    <button type="button" disabled={first + 24 >= result.protein.length} onClick={() => setStart(Math.min(result.protein.length, first + 25))}>Next local residues</button>
+    <p>Showing positions {first}–{Math.min(first + 24, result.protein.length)}. Residue TSV contains the complete supplied protein.
+      {' '}Protein and polymer positions are one-based; author numbering and insertion codes remain labels.</p>
+    <div style={{ overflowX: 'auto' }}><table>
+      <caption>Explicitly mapped local C-alpha coordinates</caption>
+      <thead><tr><th>Protein position</th><th>AA</th><th>Label / author residue</th><th>Coordinate (Å)</th><th>Neighbors</th><th>Compared residues</th><th>Nearest compared CA (Å)</th></tr></thead>
+      <tbody>{rows.map(row => <tr key={row.position}>
+        <td>{row.position}</td><td>{row.aminoAcid}</td>
+        <td>{row.coordinate ? row.coordinate.labelSeqId + ' / ' + row.coordinate.authSeqId + row.coordinate.insertionCode : 'unavailable'}</td>
+        <td>{row.coordinate ? [row.coordinate.x, row.coordinate.y, row.coordinate.z].join(', ') : 'unavailable'}</td>
+        <td>{shown(row.intrachainNeighbors)}</td><td>{shown(row.comparedResidues)}</td><td>{shown(row.nearestNonlocalDistanceAngstrom, 3)}</td>
+      </tr>)}</tbody>
+    </table></div>
+    <details><summary>Within-chain contact pairs ({result.contacts.length})</summary>
+      <p>Showing at most 100 pairs; contact TSV retains all accepted pairs.</p>
+      <table><thead><tr><th>Protein positions</th><th>Author residue labels</th><th>Distance (Å)</th></tr></thead>
+        <tbody>{result.contacts.slice(0, 100).map((row, index) => <tr key={index}>
+          <td>{row.query.proteinPosition} – {row.partner.proteinPosition}</td>
+          <td>{row.query.authSeqId}{row.query.insertionCode} – {row.partner.authSeqId}{row.partner.insertionCode}</td>
+          <td>{row.distanceAngstrom.toFixed(3)}</td>
+        </tr>)}</tbody></table>
+    </details>
+    <details><summary>Coordinate method and limitations</summary>
+      <p>{record.method.id}, version {record.method.version}. {record.method.implementation}</p>
+      <ul>{result.limitations.map((limitation, index) => <li key={index}>{limitation}</li>)}</ul>
+      <p>Input identity: {record.inputs[0].sha256}</p><p>Result identity: {record.resultId}</p>
+    </details>
+  </section>;
+}
+
+function ProteinCoordinateWorkbench({ context }: { context: object }): React.ReactElement {
+  const session = useMemo(() => new ProteinEvidenceSession(() => new Worker(new URL('../../workers/protein-evidence.worker.ts', import.meta.url), { type: 'module' })), []);
+  const [revision, setRevision] = useState(0);
+  const scope = useMemo(() => ({ context, revision }), [context, revision]);
+  const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const state = snapshot.scope === scope ? snapshot : null;
+  const [loaded, setLoaded] = useState<{ context: object; input: ProteinCoordinateInput } | null>(null);
+  const [cif, setCif] = useState<File | null>(null), [protein, setProtein] = useState<File | null>(null);
+  const [chain, setChain] = useState(''), [proteinStart, setProteinStart] = useState('1'), [model, setModel] = useState('1'), [alternate, setAlternate] = useState('');
+  const [description, setDescription] = useState(''), [citation, setCitation] = useState(''), [demo, setDemo] = useState(false);
+  const [cutoff, setCutoff] = useState('8'), [separation, setSeparation] = useState('3');
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { session.activate(); return session.deactivate; }, [session]);
+  useEffect(() => { session.setScope(scope); }, [session, scope]);
+  useEffect(() => {
+    if (snapshot.scope !== scope || !snapshot.coordinates) return;
+    setLoaded({ context, input: snapshot.coordinates });
+    if (snapshot.coordinateAccepted) {
+      setCutoff(String(snapshot.coordinateAccepted.options.contactCutoffAngstrom));
+      setSeparation(String(snapshot.coordinateAccepted.options.minSequenceSeparation));
+    }
+  }, [snapshot.scope, snapshot.coordinates, snapshot.coordinateAccepted, scope, context]);
+  const current = loaded?.context === context ? loaded.input : null;
+  const invalidate = (input: boolean) => { session.cancel(); setRevision(value => value + 1); setError(null); if (input) setLoaded(null); };
+  const review = () => {
+    if (!cif || !protein) return;
+    const coordinates = cif, sequence = protein;
+    const mapping = { labelAsymId: chain.trim(), proteinStart: Number(proteinStart), model: Number(model), alternateLocation: alternate.trim() || null };
+    const source: ProteinCoordinateInput['source'] = { kind: demo ? 'demo' : 'local', description: description.trim() || coordinates.name, reference: citation.trim() || null };
+    setLoaded(null); setError(null);
+    void session.run(scope, async () => {
+      const [content, fasta] = await Promise.all([readProteinEvidenceFile(coordinates, 'coordinates'), readProteinEvidenceFile(sequence, 'protein')]);
+      return { kind: 'inspect-coordinates', input: prepareProteinCoordinateInput(content, fasta, coordinates.name, mapping, source) };
+    }, { kind: 'reference-file', name: coordinates.name });
+  };
+  const read = (file: File, replay: boolean) => {
+    setLoaded(null); setError(null);
+    void session.run(scope, async () => {
+      const content = await readProteinEvidenceFile(file, replay ? 'experiment' : 'coordinates');
+      return replay ? { kind: 'replay-coordinates', content } : { kind: 'inspect-coordinates', input: JSON.parse(content) as ProteinCoordinateInput };
+    }, { kind: replay ? 'saved-experiment' : 'reference-file', name: file.name });
+  };
+  const analyze = () => {
+    if (!current) return;
+    const distance = Number(cutoff), minimum = Number(separation);
+    if (!cutoff.trim() || !Number.isFinite(distance) || distance <= 0 || distance > 30 ||
+        !separation.trim() || !Number.isSafeInteger(minimum) || minimum < 1 || minimum > 10000) {
+      setError('Choose a cutoff greater than zero and at most 30 Å, and an integer sequence separation from 1 to 10000.'); return;
+    }
+    setError(null);
+    void session.run(scope, { kind: 'analyze-coordinates', input: current,
+      options: { contactCutoffAngstrom: distance, minSequenceSeparation: minimum } }, { kind: 'reference-file', name: current.name });
+  };
+  return <section aria-label="Local mmCIF coordinate workbench">
+    <h4>Analyze your own mmCIF protein coordinates</h4>
+    <p>Supply one protein FASTA and a local mmCIF file. Choose the exact label chain, model and polymer offset before calculating geometry.
+      {' '}No receptor, embedding, publication or homolog alignment is required. Files stay in this browser.</p>
+    <fieldset disabled={!!state?.busy}>
+      <legend>Local files and explicit sequence mapping</legend>
+      <label>Local mmCIF file <input aria-label="Local mmCIF file" type="file" accept=".cif,.mmcif,text/plain"
+        onChange={event => { invalidate(true); setCif(event.currentTarget.files?.[0] ?? null); }} /></label>
+      <label>Coordinate protein FASTA <input aria-label="Coordinate protein FASTA" type="file" accept=".fa,.faa,.fasta,.fas,text/plain"
+        onChange={event => { invalidate(true); setProtein(event.currentTarget.files?.[0] ?? null); }} /></label>
+      <label>mmCIF label chain ID <input aria-label="mmCIF label chain ID" value={chain} maxLength={128}
+        onChange={event => { invalidate(true); setChain(event.target.value); }} /></label>
+      <label>Protein position for polymer label 1 <input aria-label="Protein position for polymer label 1" type="number" min="1" max="20000" value={proteinStart}
+        onChange={event => { invalidate(true); setProteinStart(event.target.value); }} /></label>
+      <label>mmCIF model number <input aria-label="mmCIF model number" type="number" min="1" max="9999" value={model}
+        onChange={event => { invalidate(true); setModel(event.target.value); }} /></label>
+      <label>mmCIF alternate location ID <input aria-label="mmCIF alternate location ID" value={alternate} maxLength={16} placeholder="Blank requires unambiguous atoms"
+        onChange={event => { invalidate(true); setAlternate(event.target.value); }} /></label>
+      <label>Coordinate source description <input aria-label="Coordinate source description" value={description} maxLength={512}
+        onChange={event => { invalidate(true); setDescription(event.target.value); }} /></label>
+      <label>Coordinate source citation <input aria-label="Coordinate source citation" value={citation} maxLength={512}
+        onChange={event => { invalidate(true); setCitation(event.target.value); }} /></label>
+      <label><input type="checkbox" checked={demo} onChange={event => { invalidate(true); setDemo(event.target.checked); }} /> Synthetic teaching coordinates</label>
+      <button type="button" disabled={!cif || !protein || !chain.trim() || !proteinStart.trim() || !model.trim()} onClick={review}>Review local mmCIF mapping</button>
+      <p>Use label_asym_id, not the author chain name. The offset maps label_seq_id 1 to the supplied protein position, including unmodeled residues.
+        {' '}Only canonical amino acids are supported. Explicit alternate selection includes that conformer and atoms without alternatives.</p>
+      <label>Load prepared coordinate input JSON <input aria-label="Load prepared coordinate input JSON" type="file" accept=".json,application/json"
+        onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) read(file, false); }} /></label>
+      <label>Replay local coordinate experiment JSON <input aria-label="Replay local coordinate experiment JSON" type="file" accept=".json,application/json"
+        onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) read(file, true); }} /></label>
+    </fieldset>
+    <p>Limits: 4 MiB coordinate input, 128 KiB protein FASTA, 20,000 protein residues and 4,096 selected C-alpha atoms. Downloads retain private inputs.</p>
+    {current && <p role="status">Validated local mapping: {current.protein.id}, label chain {current.structure.labelAsymId}, model {current.structure.model};
+      {' '}label position 1 → protein position {current.structure.proteinStart}. This standalone input is independent of the current genome.</p>}
+    <fieldset disabled={!current || !!state?.busy}>
+      <legend>Local coordinate geometry settings</legend>
+      <label>Local CA distance cutoff (Å) <input aria-label="Local CA distance cutoff" type="number" min=".001" max="30" step=".5" value={cutoff}
+        onChange={event => { invalidate(false); setCutoff(event.target.value); }} /></label>
+      <label>Local minimum sequence separation <input aria-label="Local minimum sequence separation" type="number" min="1" max="10000" value={separation}
+        onChange={event => { invalidate(false); setSeparation(event.target.value); }} /></label>
+      <button type="button" disabled={!current} onClick={analyze}>Analyze local mmCIF geometry</button>
+    </fieldset>
+    {state?.busy && <button type="button" onClick={session.cancel}>Cancel local coordinate analysis</button>}
+    {state?.phase && <p aria-live="polite">{state.phase}</p>}
+    {(error || state?.error) && <p role="alert">{error || state?.error}</p>}
+    {state?.coordinateAccepted && <ProteinCoordinateResults experiment={state.coordinateAccepted} verified={state.verified} />}
+  </section>;
+}
+
 type Settings = { proteinId: string; chain: string; cutoff: string; separation: string; contactScope: 'chain' | 'assembly' };
 const defaults: Settings = { proteinId: '', chain: 'auto', cutoff: '8', separation: '3', contactScope: 'assembly' };
 
@@ -294,6 +471,7 @@ export function ProteinEvidencePanel({ repository, phage, selectedGeneId, inputs
     <p>Compute finite-sample amino-acid diversity and observed C-alpha neighborhoods from exact source-backed inputs. Files stay in this browser.
       {' '}The method reports mapped distances and missing coverage; it does not estimate surface area, affinity or mutation effects.</p>
     <ProteinAlignmentWorkbench context={context} />
+    <ProteinCoordinateWorkbench context={context} />
     <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
       <label>Load protein reference JSON <input aria-label="Load protein reference JSON" type="file" accept=".json,application/json"
         onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) read(file, 'reference'); }} /></label>

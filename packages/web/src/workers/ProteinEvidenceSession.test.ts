@@ -2,7 +2,7 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import snapshot from '../../../../data/protein-references/lambda-lamb-v1.json';
 import { createAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
-import { parseProteinReferenceBundle, parseProteinAlignmentFasta, PROTEIN_ALIGNMENT_LIMITS } from '../../../core/src/protein-reference';
+import { parseProteinReferenceBundle, parseProteinAlignmentFasta, PROTEIN_ALIGNMENT_LIMITS, prepareProteinCoordinateInput, PROTEIN_COORDINATE_LIMITS } from '../../../core/src/protein-reference';
 import { type ProteinStructureOptions } from '../../../core/src/analysis/tail-fiber-structure';
 import {
   ProteinEvidenceSession, executeProteinEvidenceRequest, readProteinEvidenceFile,
@@ -296,6 +296,155 @@ describe('standalone aligned protein evidence', () => {
         { kind: 'saved-experiment', name: 'saved-alignment.json' }), true, session.getSnapshot().error ?? '');
       assert.equal(session.getSnapshot().verified, true);
       assert.equal(session.getSnapshot().alignmentAccepted!.record.resultId, first.record.resultId);
+      assert.equal(session.getSnapshot().accepted, null);
+    } finally { session.deactivate(); }
+  }, 20000);
+});
+
+
+describe('standalone local mmCIF evidence', () => {
+  // Independent 3-4-5 / 5-12-13 geometry, with missing polymer positions and author insertions.
+  const cif = `data_private
+loop_
+_atom_site.group_PDB
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.auth_asym_id
+_atom_site.auth_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.pdbx_PDB_model_num
+ATOM C CA . ALA A 1 Z -2 ? 0 0 0 1 1
+ATOM C CA . ASP A 3 Z 10 A 3 4 0 1 1
+ATOM C CA . GLY A 6 Z 10 B 0 0 12 1 1
+#
+`;
+  const input = () => prepareProteinCoordinateInput(cif, '>private\nMKACDEFGH', 'private.cif',
+    { labelAsymId: 'A', proteinStart: 3 }, { kind: 'local', description: 'Private coordinate source', reference: 'Notebook 23' });
+  const coordinateRequest = (cutoff = 5): ProteinEvidenceRequest => ({ kind: 'analyze-coordinates', input: input(),
+    options: { contactCutoffAngstrom: cutoff, minSequenceSeparation: 1 } });
+
+  it('imports only explicitly mapped coordinates and replays independent literal distances', async () => {
+    const inspected = await executeProteinEvidenceRequest({ kind: 'inspect-coordinates', input: input() });
+    if (inspected.kind !== 'coordinates') throw new Error('Expected coordinate input');
+    assert.deepEqual(inspected.input, input());
+    assert.equal('experiment' in inspected, false);
+    const first = await executeProteinEvidenceRequest(coordinateRequest());
+    if (first.kind !== 'coordinate-experiment') throw new Error('Expected coordinate experiment');
+    assert.deepEqual(first.experiment.result.coverage, {
+      proteinResidues: 9, coordinateResidues: 3, unmappedResidues: 6, intrachainContacts: 1,
+    });
+    assert.deepEqual(first.experiment.result.contacts.map(contact =>
+      [contact.query.proteinPosition, contact.partner.proteinPosition, contact.distanceAngstrom]), [[3, 5, 5]]);
+    assert.equal(first.experiment.result.residues[3].coordinate, null);
+    assert.equal(first.experiment.result.residues[3].intrachainNeighbors, null);
+    assert.equal(first.experiment.result.residues[7].intrachainNeighbors, 0);
+    assert.equal(first.experiment.record.fields.alignment.kind, 'unavailable');
+    const exported = serializeAnalysisRecord(first.experiment.record);
+    const replay = await executeProteinEvidenceRequest({ kind: 'replay-coordinates', content: exported });
+    if (replay.kind !== 'coordinate-experiment') throw new Error('Expected coordinate replay');
+    assert.equal(replay.verified, true);
+    assert.equal(replay.experiment.record.resultId, first.experiment.record.resultId);
+    assert.deepEqual(replay.experiment.input, input());
+    await assert.rejects(executeProteinEvidenceRequest({ kind: 'replay', content: exported }), /method/i);
+    await assert.rejects(executeProteinEvidenceRequest({ kind: 'replay-alignment', content: exported }), /method/i);
+    const forged = structuredClone(first.experiment.record);
+    forged.fields.geometry.value = { invented: true };
+    await assert.rejects(executeProteinEvidenceRequest({ kind: 'replay-coordinates',
+      content: serializeAnalysisRecord(await createAnalysisRecord(forged)) }), /differ|recomput|identity/i);
+  });
+
+  it('accepts the submitted mapping and rejects valid geometry from other settings or sources', async () => {
+    const { session, workers, scope } = workspace();
+    try {
+      const pending = session.run(scope, { kind: 'inspect-coordinates', input: input() }, origin);
+      await tick();
+      workers[0].emit(await executeProteinEvidenceRequest(workers[0].requests[0]));
+      assert.equal(await pending, true, session.getSnapshot().error ?? '');
+      assert.equal(session.getSnapshot().coordinates!.structure.proteinStart, 3);
+      assert.equal(session.getSnapshot().coordinateAccepted, null);
+      const settings = session.run(scope, coordinateRequest(), origin); await tick();
+      workers[1].emit(await executeProteinEvidenceRequest(coordinateRequest(12)));
+      assert.equal(await settings, false);
+      assert.match(session.getSnapshot().error!, /source|mapping|settings|identity/);
+      assert.equal(session.getSnapshot().coordinateAccepted, null);
+
+      const submitted = coordinateRequest();
+      const captured = session.run(scope, submitted, origin);
+      if (submitted.kind === 'analyze-coordinates') submitted.input.source.description = 'Late mutation';
+      await tick();
+      const sent = workers[2].requests[0];
+      assert.equal(sent.kind === 'analyze-coordinates' && sent.input.source.description, 'Private coordinate source');
+      const other = structuredClone(sent);
+      if (other.kind === 'analyze-coordinates') other.input.source.description = 'A different source';
+      workers[2].emit(await executeProteinEvidenceRequest(other));
+      assert.equal(await captured, false);
+      assert.equal(session.getSnapshot().coordinateAccepted, null);
+      const good = session.run(scope, coordinateRequest(), origin); await tick();
+      workers[3].emit(await executeProteinEvidenceRequest(workers[3].requests[0]));
+      assert.equal(await good, true, session.getSnapshot().error ?? '');
+      assert.equal(session.getSnapshot().coordinateAccepted!.result.contacts[0].distanceAngstrom, 5);
+      assert.equal(session.getSnapshot().accepted, null);
+      assert.equal(session.getSnapshot().alignmentAccepted, null);
+      session.setScope({ ...scope, revision: 1 });
+      assert.equal(session.getSnapshot().coordinateAccepted, null);
+      assert.equal(session.getSnapshot().coordinates, null);
+    } finally { session.deactivate(); }
+  });
+
+  it('never accepts a genomic-CDS origin, malformed mapping, or late cancelled coordinate result', async () => {
+    const { session, workers, scope } = workspace();
+    try {
+      assert.equal(await session.run(scope, coordinateRequest(), { kind: 'current-cds',
+        genomeAccession: 'NC_001416.1', geneId: 42, proteinAccession: 'P03749' }), false);
+      assert.match(session.getSnapshot().error!, /cannot assert a verified genomic CDS/);
+      assert.equal(workers.length, 0);
+      const bad = input(); bad.structure.proteinStart = 1;
+      await assert.rejects(executeProteinEvidenceRequest({ kind: 'inspect-coordinates', input: bad }), /residue|sequence|mapping/i);
+      const submitted = coordinateRequest(), reply = await executeProteinEvidenceRequest(submitted);
+      const pending = session.run(scope, submitted, origin); await tick();
+      const late = workers[0].onmessage!;
+      session.cancel();
+      assert.equal(await pending, false); assert.equal(workers[0].terminated, 1);
+      late({ data: reply } as MessageEvent<ProteinEvidenceMessage>);
+      assert.equal(session.getSnapshot().coordinateAccepted, null);
+    } finally { session.deactivate(); }
+  });
+
+  it('bounds both raw coordinate and single-protein inputs before reading their bytes', async () => {
+    for (const [kind, maximum] of [['coordinates', PROTEIN_COORDINATE_LIMITS.bytes],
+      ['protein', PROTEIN_COORDINATE_LIMITS.proteinBytes]] as const) {
+      let reads = 0;
+      await assert.rejects(readProteinEvidenceFile({ size: maximum + 1,
+        arrayBuffer: async () => { reads++; return new ArrayBuffer(0); } }, kind), /limit/);
+      assert.equal(reads, 0);
+      await assert.rejects(readProteinEvidenceFile({ size: 1,
+        arrayBuffer: async () => new ArrayBuffer(maximum + 1) }, kind), /limit/);
+      await assert.rejects(readProteinEvidenceFile({ size: 2,
+        arrayBuffer: async () => new Uint8Array([0xc3, 0x28]).buffer }, kind));
+    }
+  });
+
+  it('imports, computes, exports and freshly replays in actual disposable workers', async () => {
+    const scope = {}, session = new ProteinEvidenceSession(() => new Worker(new URL('./protein-evidence.worker.ts', import.meta.url), { type: 'module' }));
+    session.activate(); session.setScope(scope);
+    try {
+      assert.equal(await session.run(scope, { kind: 'inspect-coordinates', input: input() }, origin), true, session.getSnapshot().error ?? '');
+      assert.equal(session.getSnapshot().coordinates!.protein.id, 'private');
+      assert.equal(await session.run(scope, coordinateRequest(), origin), true, session.getSnapshot().error ?? '');
+      const first = session.getSnapshot().coordinateAccepted!;
+      assert.deepEqual(first.result.contacts.map(contact => contact.distanceAngstrom), [5]);
+      assert.equal(await session.run(scope, { kind: 'replay-coordinates', content: serializeAnalysisRecord(first.record) },
+        { kind: 'saved-experiment', name: 'saved-coordinates.json' }), true, session.getSnapshot().error ?? '');
+      assert.equal(session.getSnapshot().verified, true);
+      assert.equal(session.getSnapshot().coordinateAccepted!.record.resultId, first.record.resultId);
       assert.equal(session.getSnapshot().accepted, null);
     } finally { session.deactivate(); }
   }, 20000);

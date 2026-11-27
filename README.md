@@ -1305,6 +1305,38 @@ explicit actions in their panel; actions in other panels are not recorded.
 Broader overlay coverage, TUI evidence display and complete action replay remain
 open work.
 
+### Analyze local protein coordinates
+
+The **Host Interactions → Protein alignment and structural evidence** workbench
+accepts an ordinary mmCIF file plus one protein FASTA. Under **Analyze your own
+mmCIF protein coordinates**, choose the files, declare the label chain, model,
+alternate conformer if needed, and protein position corresponding to polymer
+label position 1. Review the mapping, then compute C-alpha distances and contacts.
+
+Observed amino acids must match the explicitly mapped protein positions. Missing
+coordinates keep their original positions; author residue numbers and insertion
+codes remain labels. Every protein position appears in the complete residue
+export, so unavailable geometry stays distinguishable from zero neighbors.
+
+The same workflow is available from the executable:
+
+```bash
+phage-explorer protein-structure prepare local.cif \
+  --sequence protein.faa --chain A --protein-start 1 \
+  --source "My supplied structure and sequence" --output local-input.json
+phage-explorer protein-structure analyze local-input.json \
+  --cutoff 8 --separation 3 --output local-geometry.json
+phage-explorer protein-structure replay local-geometry.json \
+  --format contacts --output local-contacts.tsv
+```
+
+Prepared input JSON and complete experiments move between browser and native
+workflows. Replay recomputes the geometry from the saved coordinates, sequence,
+mapping and settings; generic `workflow replay-experiment` also accepts these
+experiments. The coordinate method describes one selected chain/model and
+does not infer binding affinity, docking energy or host range. See the
+[coordinate workflow and supported input profile](data/protein-references/README.md#analyze-your-own-mmcif-coordinates).
+
 ### Parsimonious host-model flux
 
 The sourced host-model workbench accepts an explicitly attributed COBRA JSON

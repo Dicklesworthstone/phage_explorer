@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import snapshot from '../../../data/protein-references/lambda-lamb-v1.json';
 import { parseProteinReferenceBundle, proteinReferenceContentHash, type ProteinReferenceBundle,
-  parseProteinAlignmentFasta, validateProteinAlignmentInput, PROTEIN_ALIGNMENT_LIMITS } from './protein-reference';
+  parseProteinAlignmentFasta, validateProteinAlignmentInput, PROTEIN_ALIGNMENT_LIMITS,
+  prepareProteinCoordinateInput, validateProteinCoordinateInput, parseProteinCoordinates, PROTEIN_COORDINATE_LIMITS } from './protein-reference';
 
 async function changed(edit: (bundle: ProteinReferenceBundle) => void): Promise<ProteinReferenceBundle> {
   const bundle = structuredClone(snapshot) as ProteinReferenceBundle;
@@ -108,5 +109,111 @@ describe('Supplied protein alignments without invented complex inputs', () => {
     expect(() => parseProteinAlignmentFasta(' '.repeat(PROTEIN_ALIGNMENT_LIMITS.bytes + 1), 'too-large.faa')).toThrow('2 MiB');
     expect(() => parseProteinAlignmentFasta(Array.from({ length: 257 }, (_, i) => '>r' + i + '\nAA').join('\n'), 'too-many.faa')).toThrow('256');
     expect(() => validateProteinAlignmentInput({ ...input, rows: Array.from({ length: 51 }, (_, i) => ({ id: 'r' + i, description: '', alignedSequence: 'A'.repeat(20000) })) })).toThrow('cells');
+  });
+});
+
+
+describe('standalone mmCIF input and exact polymer mapping', () => {
+  const headers = ['group_PDB', 'type_symbol', 'label_atom_id', 'label_alt_id', 'label_comp_id', 'label_asym_id',
+    'label_seq_id', 'auth_asym_id', 'auth_seq_id', 'pdbx_PDB_ins_code', 'Cartn_x', 'Cartn_y', 'Cartn_z', 'occupancy', 'pdbx_PDB_model_num'];
+  const rows = [
+    'ATOM C CA . ALA A 1 Z -2 ? 0 0 0 1 1',
+    'ATOM C CA . ASP A 3 Z 10 A 3 4 0 1 1',
+    'ATOM C CA . GLY A 6 Z 10 B 0 0 12 1 1',
+  ];
+  const cif = (body = rows) => 'data_private\nloop_\n' + headers.map(name => '_atom_site.' + name).join('\n') + '\n' + body.join('\n') + '\n#\n';
+  const input = (content = cif()) => prepareProteinCoordinateInput(content, '>target private sequence\nMKACDEFGH\n', 'private.cif',
+    { labelAsymId: 'A', proteinStart: 3 }, { kind: 'local', description: 'Local experimental or model coordinates', reference: null });
+
+  test('maps missing polymer positions without using author numbering or inventing residues', () => {
+    const parsed = parseProteinCoordinates(input());
+    expect(parsed.chain).toEqual({ proteinId: 'target', labelAsymId: 'A', authAsymId: 'Z', start: 3, coordinates: [
+      { labelSeqId: 1, authSeqId: -2, insertionCode: '', aminoAcid: 'A', x: 0, y: 0, z: 0 },
+      { labelSeqId: 3, authSeqId: 10, insertionCode: 'A', aminoAcid: 'D', x: 3, y: 4, z: 0 },
+      { labelSeqId: 6, authSeqId: 10, insertionCode: 'B', aminoAcid: 'G', x: 0, y: 0, z: 12 },
+    ] });
+    expect(parsed.selection).toEqual({ dataBlock: 'private', model: 1, alternateLocation: null, minimumLabelSeqId: 1,
+      maximumLabelSeqId: 6, omittedAlternateAtoms: 0, zeroOccupancyAtoms: 0 });
+    expect(parsed.input.structure.content).toBe(cif());
+    expect(parsed.input.protein).toEqual({ id: 'target', description: 'private sequence', sequence: 'MKACDEFGH' });
+  });
+
+  test('accepts quoted/wrapped rows, reordered case-insensitive columns, comments and unrelated semicolon text', () => {
+    const order = [14, 10, 11, 12, 5, 0, 1, 2, 3, 4, 6, 7, 8, 9, 13];
+    const content = 'data_private\n_struct.title\n;A local coordinate file\nwith a multiline title\n;\nloop_\n_note.id\n_note.text\n1 "loop_"\n# comment\nloop_\n' +
+      order.map(index => '_ATOM_SITE.' + headers[index].toUpperCase()).join('\n') + '\n' +
+      rows.map(row => order.map(index => index === 5 ? "'A'" : row.split(' ')[index]).join('\n')).join('\n') + '\n#\n';
+    expect(parseProteinCoordinates(input(content)).chain.coordinates).toEqual(parseProteinCoordinates(input()).chain.coordinates);
+  });
+
+  test('selects an explicit model and chain without joining author labels or models', () => {
+    const content = cif([...rows, rows[0].replace('ALA A', 'ALA B'), rows[1].replace('3 4 0 1 1', '30 40 0 1 2')]);
+    expect(parseProteinCoordinates(input(content)).chain.coordinates).toHaveLength(3);
+    const second = input(content); second.structure.model = 2;
+    expect(parseProteinCoordinates(second).chain.coordinates).toEqual([
+      { labelSeqId: 3, authSeqId: 10, insertionCode: 'A', aminoAcid: 'D', x: 30, y: 40, z: 0 },
+    ]);
+    second.structure.model = 3;
+    expect(() => parseProteinCoordinates(second)).toThrow(/No uniquely identified/);
+  });
+
+  test('requires a declared conformer and counts excluded alternate/zero-occupancy atoms', () => {
+    const content = cif([rows[0].replace('CA .', 'CA A').replace('0 0 0 1 1', '0 0 0 0.5 1'),
+      rows[0].replace('CA .', 'CA B').replace('0 0 0 1 1', '10 0 0 0.5 1'),
+      rows[1], rows[2], 'ATOM C CA . CYS A 2 Z 4 ? 1 1 1 0 1']);
+    const value = input(content);
+    expect(() => parseProteinCoordinates(value)).toThrow(/explicit alternate location/);
+    value.structure.alternateLocation = 'A';
+    const parsed = parseProteinCoordinates(value);
+    expect(parsed.chain.coordinates).toHaveLength(3);
+    expect(parsed.chain.coordinates[0].x).toBe(0);
+    expect(parsed.selection.omittedAlternateAtoms).toBe(1);
+    expect(parsed.selection.zeroOccupancyAtoms).toBe(1);
+    value.structure.alternateLocation = 'B';
+    expect(parseProteinCoordinates(value).chain.coordinates[0].x).toBe(10);
+    value.structure.alternateLocation = 'C';
+    expect(() => parseProteinCoordinates(value)).toThrow(/absent/);
+  });
+
+  test('refuses contradictory or ambiguous residue mappings and modified residues', () => {
+    const invalid = [
+      cif([...rows, rows[0]]),
+      cif([rows[0], rows[1], rows[2].replace('10 B', '10 A')]),
+      cif([rows[0], rows[1].replace(' Z 10', ' Y 10'), rows[2]]),
+      cif([rows[0].replace('ALA', 'GLY'), ...rows.slice(1)]),
+      cif([rows[0].replace('ATOM C CA', 'HETATM C CA'), ...rows.slice(1)]),
+      cif([rows[0].replace('ALA', 'MSE'), ...rows.slice(1)]),
+      cif([rows[0].replace(' A 1 ', ' A ? '), ...rows.slice(1)]),
+    ];
+    for (const content of invalid) expect(() => parseProteinCoordinates(input(content))).toThrow();
+    const wrongOffset = input(); wrongOffset.structure.proteinStart = 4;
+    expect(() => parseProteinCoordinates(wrongOffset)).toThrow(/does not match/);
+  });
+
+  test('does not accept permissive numeric parsing, incomplete loops or a second coordinate frame', () => {
+    for (const content of [
+      cif([rows[0].replace('0 0 0', '0junk 0 0'), ...rows.slice(1)]),
+      cif([rows[0].replace('0 0 0', 'NaN 0 0'), ...rows.slice(1)]),
+      cif([rows[0].replace('0 0 0 1 1', '0 0 0 1.1 1'), ...rows.slice(1)]),
+      cif([rows[0].replace(' A 1 ', ' A 1.5 '), ...rows.slice(1)]),
+      cif([rows[0].slice(0, -2)]),
+      cif() + 'data_other\n_entry.id other\n',
+      cif().replace('_atom_site.auth_seq_id\n', ''),
+      cif() + 'loop_\n_atom_site.group_PDB\nATOM\n',
+    ]) expect(() => parseProteinCoordinates(input(content))).toThrow();
+  });
+
+  test('bounds raw files and canonical snapshots, and requires one exact protein and explicit mapping', () => {
+    expect(() => prepareProteinCoordinateInput(cif(), '>a\nAC\n>b\nAC\n', 'x', { labelAsymId: 'A', proteinStart: 1 })).toThrow(/exactly one/);
+    expect(() => prepareProteinCoordinateInput(cif(), '>a\nACX\n', 'x', { labelAsymId: 'A', proteinStart: 1 })).toThrow(/canonical/);
+    expect(() => prepareProteinCoordinateInput(cif(), '>a\nAC*\n', 'x', { labelAsymId: 'A', proteinStart: 1 })).toThrow(/canonical/);
+    expect(() => prepareProteinCoordinateInput(cif(), '>a\nAC\n', 'x', { labelAsymId: 'A', proteinStart: 0 })).toThrow(/within/);
+    expect(() => validateProteinCoordinateInput({ ...input(), embeddings: [] })).toThrow(/unsupported fields/);
+    const value = input(); value.structure.content = 'x'.repeat(PROTEIN_COORDINATE_LIMITS.bytes + 1);
+    expect(() => parseProteinCoordinates(value)).toThrow(/4 MiB/);
+  });
+
+  test('does not weaken the independent deposited-complex validation contract', async () => {
+    await expect(parseProteinReferenceBundle(input())).rejects.toThrow();
   });
 });

@@ -10,9 +10,9 @@ import { loadProteinReferenceInputs, type PhageFull, type ProteinReferenceReposi
 import snapshot from '../../../../../data/protein-references/lambda-lamb-v1.json';
 import { SqlJsRepository } from '../../db/SqlJsRepository';
 import { ProteinReferenceCoverage } from './HostInteractionOverlay';
-import { ProteinEvidencePanel, ProteinEvidenceResults, ProteinAlignmentResults } from './ProteinEvidencePanel';
-import { createProteinStructureExperiment, createProteinAlignmentExperiment } from '../../../../core/src/analysis/tail-fiber-structure';
-import { parseProteinAlignmentFasta } from '../../../../core/src/protein-reference';
+import { ProteinEvidencePanel, ProteinEvidenceResults, ProteinAlignmentResults, ProteinCoordinateResults } from './ProteinEvidencePanel';
+import { createProteinStructureExperiment, createProteinAlignmentExperiment, createProteinCoordinateExperiment } from '../../../../core/src/analysis/tail-fiber-structure';
+import { parseProteinAlignmentFasta, prepareProteinCoordinateInput } from '../../../../core/src/protein-reference';
 
 const root = resolve(import.meta.dir, '../../../../..');
 const require = createRequire(import.meta.url);
@@ -197,5 +197,73 @@ describe('ordinary protein alignment presentation', () => {
     expect(html).toContain('Export alignment residue TSV');
     expect(html).toContain('no current genome, accession or CDS mapping has been verified');
     expect(html).not.toContain('Export contact TSV');
+  });
+});
+
+
+describe('standalone local mmCIF presentation', () => {
+  test('offers explicit file, sequence and mapping controls without a loaded genome or full complex', () => {
+    const html = renderToStaticMarkup(<ProteinEvidencePanel phage={null} selectedGeneId={null}
+      inputs={{ status: 'unavailable', reason: 'No mapped complex for this genome.' }} onSelectGene={() => {}} />);
+    expect(html).toContain('Local mmCIF coordinate workbench');
+    for (const control of ['Local mmCIF file', 'Coordinate protein FASTA', 'mmCIF label chain ID',
+      'Protein position for polymer label 1', 'mmCIF model number', 'mmCIF alternate location ID',
+      'Coordinate source description', 'Coordinate source citation', 'Load prepared coordinate input JSON',
+      'Replay local coordinate experiment JSON']) {
+      expect(html).toContain('aria-label="' + control + '"');
+    }
+    expect(html).toContain('No receptor, embedding, publication or homolog alignment is required');
+    expect(html).toContain('label_seq_id 1');
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Review local mmCIF mapping/);
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Analyze local mmCIF geometry/);
+    expect(html).not.toContain('Local mmCIF geometry results');
+  });
+
+  test('renders literal local identities, missing residues, insertion codes and independent geometry exports', async () => {
+    const cif = `data_private
+loop_
+_atom_site.group_PDB
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.auth_asym_id
+_atom_site.auth_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.pdbx_PDB_model_num
+ATOM C CA . ALA A 1 Z -2 ? 0 0 0 1 1
+ATOM C CA . ASP A 3 Z 10 A 3 4 0 1 1
+ATOM C CA . GLY A 6 Z 10 B 0 0 12 1 1
+#
+`;
+    const input = prepareProteinCoordinateInput(cif, '><b>private</b> supplied label\nMKACDEFGH', 'local.cif',
+      { labelAsymId: 'A', proteinStart: 3 }, { kind: 'local', description: '<script>literal source</script>', reference: 'Notebook 23' });
+    const experiment = await createProteinCoordinateExperiment(input, { contactCutoffAngstrom: 5, minSequenceSeparation: 1 });
+    const html = renderToStaticMarkup(<ProteinCoordinateResults experiment={experiment} verified={true} />);
+    expect(html).toContain('Fresh replay verified.');
+    expect(html).toContain('&lt;b&gt;private&lt;/b&gt;');
+    expect(html).toContain('&lt;script&gt;literal source&lt;/script&gt;');
+    expect(html).not.toContain('<script>literal source</script>');
+    expect(html).toContain('Notebook 23');
+    expect(html).toContain('Label chain A; author chain Z; model 1');
+    expect(html).toContain('Polymer label position 1 maps to protein position 3');
+    expect(html).toContain('3 / 9');
+    expect(html).toContain('3 / 10A');
+    expect(html).toContain('6 / 10B');
+    expect(html).toContain('5.000');
+    expect(html).toContain('unavailable');
+    expect(html).toContain('No current genome, accession or genomic CDS mapping is implied');
+    expect(html).toContain('Export local coordinate experiment JSON');
+    expect(html).toContain('Export prepared coordinate input JSON');
+    expect(html).toContain('Export local coordinate residue TSV');
+    expect(html).toContain('Export local coordinate contact TSV');
+    expect(html).not.toContain('Verified against the loaded genome');
+    expect(html).not.toContain('Alignment entropy');
   });
 });

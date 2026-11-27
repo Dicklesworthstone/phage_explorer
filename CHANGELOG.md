@@ -6,6 +6,20 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Standalone local mmCIF protein geometry
+
+- Prepare ordinary mmCIF and single-protein FASTA inputs with explicit chain,
+  model, alternate-location and polymer-to-protein mapping. Observed residues
+  are checked against the supplied sequence; missing positions, author numbers
+  and insertion codes are preserved.
+- Browser and native workflows compute within-chain C-alpha geometry, export
+  complete residue/contact tables and replay exact experiments. Generic native
+  experiment replay accepts the same method. Work runs in cancellable workers.
+- The standalone input requires no receptor, embedding or homolog-alignment
+  metadata. The complete deposited-reference contract retains its requirements.
+  Geometry does not establish binding, model accuracy or host range.
+  [Input profile, commands and limits](data/protein-references/README.md#analyze-your-own-mmcif-coordinates).
+
 ### Parsimonious flux selection for sourced host models
 
 - Optional pFBA minimizes total absolute signed reaction flux while preserving

@@ -1,12 +1,15 @@
 /** Portable, source-bound protein evidence computed in disposable workers. */
 import { analysisJson, parseAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
 import { parseProteinReferenceBundle, parseProteinAlignmentFasta, PROTEIN_ALIGNMENT_LIMITS,
-  type ProteinReferenceBundle, type ProteinAlignmentInput } from '../../../core/src/protein-reference';
+  validateProteinCoordinateInput, parseProteinCoordinates, PROTEIN_COORDINATE_LIMITS,
+  type ProteinReferenceBundle, type ProteinAlignmentInput, type ProteinCoordinateInput } from '../../../core/src/protein-reference';
 import {
   createProteinStructureExperiment, replayProteinStructureExperiment, resolveProteinStructureOptions,
   PROTEIN_STRUCTURE_LIMITS, PROTEIN_STRUCTURE_METHOD, type ProteinStructureOptions,
   createProteinAlignmentExperiment, replayProteinAlignmentExperiment, resolveProteinAlignmentOptions,
   PROTEIN_ALIGNMENT_METHOD, type ProteinAlignmentOptions, type ProteinAlignmentExperiment,
+  createProteinCoordinateExperiment, replayProteinCoordinateExperiment, resolveProteinCoordinateOptions,
+  PROTEIN_COORDINATE_METHOD, type ProteinCoordinateExperiment,
 } from '../../../core/src/analysis/tail-fiber-structure';
 
 export type ProteinEvidenceExperiment = Awaited<ReturnType<typeof createProteinStructureExperiment>>;
@@ -15,12 +18,16 @@ export type ProteinEvidenceOrigin =
   | { kind: 'reference-file' | 'saved-experiment'; name: string };
 export type ProteinEvidenceRequest =
   | { kind: 'analyze'; reference: ProteinReferenceBundle; options: ProteinStructureOptions }
-  | { kind: 'inspect' | 'replay' | 'replay-alignment'; content: string }
+  | { kind: 'inspect' | 'replay' | 'replay-alignment' | 'replay-coordinates'; content: string }
+  | { kind: 'inspect-coordinates'; input: ProteinCoordinateInput }
+  | { kind: 'analyze-coordinates'; input: ProteinCoordinateInput; options: ProteinStructureOptions }
   | { kind: 'inspect-alignment'; content: string; name: string; source: ProteinAlignmentInput['source'] }
   | { kind: 'analyze-alignment'; input: ProteinAlignmentInput; options: ProteinAlignmentOptions };
 export type ProteinEvidenceResult =
   | { kind: 'reference'; reference: ProteinReferenceBundle }
   | { kind: 'experiment'; experiment: ProteinEvidenceExperiment; verified: boolean }
+  | { kind: 'coordinates'; input: ProteinCoordinateInput }
+  | { kind: 'coordinate-experiment'; experiment: ProteinCoordinateExperiment; verified: boolean }
   | { kind: 'alignment'; input: ProteinAlignmentInput }
   | { kind: 'alignment-experiment'; experiment: ProteinAlignmentExperiment; verified: boolean };
 export type ProteinEvidenceMessage = ProteinEvidenceResult
@@ -33,9 +40,10 @@ function checkContent(content: unknown, maximum: number): asserts content is str
   }
 }
 
-export async function readProteinEvidenceFile(file: Pick<File, 'size' | 'arrayBuffer'>, kind: 'reference' | 'experiment' | 'alignment'): Promise<string> {
+export async function readProteinEvidenceFile(file: Pick<File, 'size' | 'arrayBuffer'>, kind: 'reference' | 'experiment' | 'alignment' | 'coordinates' | 'protein'): Promise<string> {
   const maximum = kind === 'reference' ? PROTEIN_STRUCTURE_LIMITS.referenceBytes
-    : kind === 'alignment' ? PROTEIN_ALIGNMENT_LIMITS.bytes : PROTEIN_EXPERIMENT_FILE_LIMIT;
+    : kind === 'alignment' ? PROTEIN_ALIGNMENT_LIMITS.bytes : kind === 'coordinates' ? PROTEIN_COORDINATE_LIMITS.bytes
+      : kind === 'protein' ? PROTEIN_COORDINATE_LIMITS.proteinBytes : PROTEIN_EXPERIMENT_FILE_LIMIT;
   if (!Number.isSafeInteger(file.size) || file.size < 0 || file.size > maximum) throw new Error('Protein input exceeds the ' + maximum / 1024 + ' KiB file limit.');
   const bytes = await file.arrayBuffer();
   if (bytes.byteLength > maximum) throw new Error('Protein input exceeds the ' + maximum / 1024 + ' KiB file limit.');
@@ -59,6 +67,19 @@ export async function executeProteinEvidenceRequest(request: ProteinEvidenceRequ
     checkContent(request.content, PROTEIN_EXPERIMENT_FILE_LIMIT);
     progress('Recomputing the saved reference experiment and verifying its complete result identity');
     return { kind: 'experiment', experiment: await replayProteinStructureExperiment(request.content.replace(/^\uFEFF/, '')), verified: true };
+  }
+  if (request.kind === 'inspect-coordinates') {
+    progress('Validating supplied mmCIF chain/model and exact polymer-to-protein mapping');
+    return { kind: 'coordinates', input: parseProteinCoordinates(request.input).input };
+  }
+  if (request.kind === 'analyze-coordinates') {
+    progress('Computing supplied within-chain C-alpha geometry from the explicit mapping');
+    return { kind: 'coordinate-experiment', experiment: await createProteinCoordinateExperiment(request.input, request.options), verified: false };
+  }
+  if (request.kind === 'replay-coordinates') {
+    checkContent(request.content, PROTEIN_EXPERIMENT_FILE_LIMIT);
+    progress('Recomputing saved local mmCIF geometry from its exact source text and mapping');
+    return { kind: 'coordinate-experiment', experiment: await replayProteinCoordinateExperiment(request.content.replace(/^\uFEFF/, '')), verified: true };
   }
   if (request.kind === 'inspect-alignment') {
     checkContent(request.content, PROTEIN_ALIGNMENT_LIMITS.bytes);
@@ -90,6 +111,8 @@ interface ProteinEvidenceSnapshot {
   accepted: ProteinEvidenceExperiment | null;
   alignment: ProteinAlignmentInput | null;
   alignmentAccepted: ProteinAlignmentExperiment | null;
+  coordinates: ProteinCoordinateInput | null;
+  coordinateAccepted: ProteinCoordinateExperiment | null;
   origin: ProteinEvidenceOrigin | null;
   verified: boolean;
   busy: boolean;
@@ -114,7 +137,7 @@ export class ProteinEvidenceSession {
   private scope: object | null = null;
   private operation: AbortController | null = null;
   private readonly listeners = new Set<() => void>();
-  private snapshot: ProteinEvidenceSnapshot = { scope: null, reference: null, accepted: null, alignment: null, alignmentAccepted: null, origin: null,
+  private snapshot: ProteinEvidenceSnapshot = { scope: null, reference: null, accepted: null, alignment: null, alignmentAccepted: null, coordinates: null, coordinateAccepted: null, origin: null,
     verified: false, busy: false, phase: '', error: null };
   constructor(private readonly factory: () => ProteinEvidenceWorker) {}
   getSnapshot = (): ProteinEvidenceSnapshot => this.snapshot;
@@ -128,7 +151,7 @@ export class ProteinEvidenceSession {
   setScope = (scope: object): void => {
     if (scope === this.scope) return;
     this.scope = scope; this.cancel();
-    this.publish({ scope, reference: null, accepted: null, alignment: null, alignmentAccepted: null, origin: null, verified: false, error: null, phase: '' });
+    this.publish({ scope, reference: null, accepted: null, alignment: null, alignmentAccepted: null, coordinates: null, coordinateAccepted: null, origin: null, verified: false, error: null, phase: '' });
   };
   cancel = (): void => {
     const old = this.operation; this.operation = null; old?.abort();
@@ -143,7 +166,7 @@ export class ProteinEvidenceSession {
     try {
       const captured = typeof input === 'function' ? input : structuredClone(input);
       const capturedOrigin = structuredClone(origin);
-      this.publish({ accepted: null, reference: null, alignment: null, alignmentAccepted: null, origin: null, verified: false, busy: true, error: null, phase: 'Reading exact protein inputs' });
+      this.publish({ accepted: null, reference: null, alignment: null, alignmentAccepted: null, coordinates: null, coordinateAccepted: null, origin: null, verified: false, busy: true, error: null, phase: 'Reading exact protein inputs' });
       if (!current()) return false;
       const request = await abortable(typeof captured === 'function'
         ? captured(owner.signal).then(value => structuredClone(value)) : Promise.resolve(captured), owner.signal);
@@ -151,6 +174,7 @@ export class ProteinEvidenceSession {
       // Bind replies to submitted inputs/settings; the worker performs every numerical calculation.
       let expectedReference: unknown = null;
       let expectedAlignment: ProteinAlignmentInput | null = null;
+      let expectedCoordinates: ProteinCoordinateInput | null = null;
       if (request.kind === 'analyze') expectedReference = request.reference;
       else if (request.kind === 'inspect') {
         checkContent(request.content, PROTEIN_STRUCTURE_LIMITS.referenceBytes);
@@ -159,11 +183,14 @@ export class ProteinEvidenceSession {
       else if (request.kind === 'inspect-alignment') {
         checkContent(request.content, PROTEIN_ALIGNMENT_LIMITS.bytes);
         expectedAlignment = parseProteinAlignmentFasta(request.content, request.name, request.source);
+      } else if (request.kind === 'inspect-coordinates' || request.kind === 'analyze-coordinates') {
+        expectedCoordinates = validateProteinCoordinateInput(request.input);
       } else checkContent(request.content, PROTEIN_EXPERIMENT_FILE_LIMIT);
-      if (request.kind.endsWith('-alignment') && capturedOrigin.kind === 'current-cds') throw new Error('A standalone protein alignment cannot assert a verified genomic CDS.');
+      if ((request.kind.endsWith('-alignment') || request.kind.endsWith('-coordinates')) && capturedOrigin.kind === 'current-cds') throw new Error('A standalone protein input cannot assert a verified genomic CDS.');
       const expectedOptions = request.kind === 'analyze' ? resolveProteinStructureOptions(request.reference, request.options) : null;
       const expectedAlignmentOptions = request.kind === 'analyze-alignment' ? resolveProteinAlignmentOptions(request.input, request.options) : null;
-      const saved: AnalysisRecord | null = request.kind === 'replay' || request.kind === 'replay-alignment'
+      const expectedCoordinateOptions = request.kind === 'analyze-coordinates' ? resolveProteinCoordinateOptions(request.input, request.options) : null;
+      const saved: AnalysisRecord | null = request.kind === 'replay' || request.kind === 'replay-alignment' || request.kind === 'replay-coordinates'
         ? await abortable(parseAnalysisRecord(request.content.replace(/^\uFEFF/, '')), owner.signal) : null;
       if (!current()) return false;
       const response = await new Promise<ProteinEvidenceResult>((resolve, reject) => {
@@ -185,6 +212,33 @@ export class ProteinEvidenceSession {
             if (message?.kind === 'error' && typeof message.message === 'string') { finish(undefined, new Error(message.message)); return; }
             if (message?.kind === 'reference' && request.kind === 'inspect' && same(message.reference, expectedReference)) { finish(message); return; }
             if (message?.kind === 'alignment' && request.kind === 'inspect-alignment' && same(message.input, expectedAlignment)) { finish(message); return; }
+            if (message?.kind === 'coordinates' && request.kind === 'inspect-coordinates' && same(message.input, expectedCoordinates)) { finish(message); return; }
+            if (message?.kind === 'coordinate-experiment') {
+              if ((request.kind !== 'analyze-coordinates' && request.kind !== 'replay-coordinates') ||
+                  message.verified !== (request.kind === 'replay-coordinates') || message.experiment?.record?.method?.id !== PROTEIN_COORDINATE_METHOD.id) {
+                finish(undefined, new Error('Unexpected local mmCIF worker response.')); return;
+              }
+              validating = true;
+              void parseAnalysisRecord(JSON.stringify(message.experiment.record), { methodId: PROTEIN_COORDINATE_METHOD.id, methodVersion: PROTEIN_COORDINATE_METHOD.version })
+                .then(record => {
+                  if (done || !current()) return;
+                  const experiment = message.experiment, { input, result } = experiment;
+                  validateProteinCoordinateInput(input);
+                  if (!same(record.method, PROTEIN_COORDINATE_METHOD) || record.seed !== null || record.inputs.length !== 1 ||
+                      record.inputs[0].id !== 'coordinates' || record.inputs[0].accession !== null || record.inputs[0].source !== input.source.kind ||
+                      result.protein.id !== input.protein.id || result.protein.length !== input.protein.sequence.length ||
+                      result.structure.labelAsymId !== input.structure.labelAsymId || result.structure.proteinStart !== input.structure.proteinStart ||
+                      result.structure.model !== input.structure.model || result.structure.alternateLocation !== input.structure.alternateLocation ||
+                      !same(record.inputs[0].data, input) || !same(record.parameters, experiment.options) ||
+                      !same(record.fields.geometry?.value, result) || record.fields.alignment?.kind !== 'unavailable' ||
+                      (expectedCoordinates !== null && (!same(expectedCoordinates, input) || !same(expectedCoordinateOptions, experiment.options))) ||
+                      (saved !== null && saved.resultId !== record.resultId)) {
+                    throw new Error('Local mmCIF reply differs from its submitted source, mapping, settings or saved identity.');
+                  }
+                  finish(message);
+                }).catch(cause => finish(undefined, cause instanceof Error ? cause : new Error(String(cause))));
+              return;
+            }
             if (message?.kind === 'alignment-experiment') {
               if ((request.kind !== 'analyze-alignment' && request.kind !== 'replay-alignment') || message.verified !== (request.kind === 'replay-alignment') ||
                 message.experiment?.record?.method?.id !== PROTEIN_ALIGNMENT_METHOD.id) {
@@ -241,6 +295,11 @@ export class ProteinEvidenceSession {
         phase: 'Reference loaded. Choose a protein and mapped chain, then analyze.' });
       else if (response.kind === 'alignment') this.publish({ alignment: response.input, origin: capturedOrigin,
         phase: 'Alignment loaded. Choose a target protein record, then analyze.' });
+      else if (response.kind === 'coordinates') this.publish({ coordinates: response.input, origin: capturedOrigin,
+        phase: 'Local mmCIF mapping validated. Inspect the chain, model and polymer offset, then analyze.' });
+      else if (response.kind === 'coordinate-experiment') this.publish({ coordinates: response.experiment.input, coordinateAccepted: response.experiment,
+        origin: capturedOrigin, verified: response.verified,
+        phase: response.verified ? 'Replay verified: fresh local mmCIF geometry agrees with the complete saved result.' : 'Local mmCIF geometry complete. Missing coordinates remain unavailable.' });
       else if (response.kind === 'alignment-experiment') this.publish({ alignment: response.experiment.input, alignmentAccepted: response.experiment,
         origin: capturedOrigin, verified: response.verified,
         phase: response.verified ? 'Replay verified: fresh diversity and the saved complete result identity agree.' : 'Alignment analysis complete. Inspect observed counts and missing coverage.' });

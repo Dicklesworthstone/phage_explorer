@@ -53,3 +53,40 @@ describe('protein-structure command contracts',()=>{
     assert.equal(structure.residues.every((row:any)=>row.coordinate===null),true);
   });
 });
+
+
+describe('native standalone mmCIF prepare/analyze/replay',()=>{
+  const cif='data_literal\nloop_\n'+['group_PDB','type_symbol','label_atom_id','label_alt_id','label_comp_id','label_asym_id',
+    'label_seq_id','auth_asym_id','auth_seq_id','pdbx_PDB_ins_code','Cartn_x','Cartn_y','Cartn_z','occupancy','pdbx_PDB_model_num']
+    .map(name=>'_atom_site.'+name).join('\n')+'\nATOM C CA . ALA A 1 Z -2 ? 0 0 0 1 1\nATOM C CA . ASP A 3 Z 10 A 3 4 0 1 1\n#\n';
+  it('requires explicit chain/polymer placement and refuses preparation overrides during replay',()=>{
+    const command=parseProteinStructureCommand(['prepare','private.cif','--sequence','protein.faa','--chain','A','--protein-start','3','--source','Lab coordinates'])!;
+    assert.deepEqual(command.preparation,{sequence:'protein.faa',labelAsymId:'A',proteinStart:3,model:1,alternateLocation:null,
+      source:{kind:'local',description:'Lab coordinates',reference:null}});
+    assert.throws(()=>parseProteinStructureCommand(['prepare','private.cif','--sequence','protein.faa','--chain','A']),/protein-start/);
+    assert.throws(()=>parseProteinStructureCommand(['prepare','-','--sequence','-','--chain','A','--protein-start','1']),/stdin/);
+    assert.throws(()=>parseProteinStructureCommand(['replay','saved.json','--model','2']),/only to prepare/);
+  });
+
+  it('prepares ordinary input, computes literal geometry and verifies a fresh native replay',async()=>{
+    const prepared=await executeProteinStructureJob({operation:'prepare',input:{name:'private.cif',text:cif},
+      preparation:{proteinFasta:'>target\nMKACDEFGH\n',labelAsymId:'A',proteinStart:3,model:1,alternateLocation:null,
+        source:{kind:'local',description:'Independent 3-4-5 coordinate control',reference:null}}});
+    assert.equal(JSON.parse(prepared.content).format,'phage-explorer-protein-coordinates');
+    assert.equal(prepared.identity,null);
+    const inspected=await executeProteinStructureJob({operation:'inspect',input:{name:'input.json',text:prepared.content}});
+    assert.equal(inspected.content,prepared.content);
+    const result=await executeProteinStructureJob({operation:'analyze',input:{name:'input.json',text:prepared.content},
+      options:{contactCutoffAngstrom:5,minSequenceSeparation:1}});
+    const record=await parseAnalysisRecord(result.content),geometry=record.fields.geometry.value as any;
+    assert.equal(record.method.id,'supplied-mmcif-protein-geometry');
+    assert.deepEqual(geometry.contacts.map((row:any)=>[row.query.proteinPosition,row.partner.proteinPosition,row.distanceAngstrom]),[[3,5,5]]);
+    assert.equal(geometry.coverage.unmappedResidues,7);
+    assert.ok(result.contacts!.includes('target\tA\tZ\t3\t1\t-2'));
+    const replay=await executeProteinStructureJob({operation:'replay',input:{name:'saved.json',text:result.content}});
+    assert.equal(replay.verified,true);
+    assert.equal(replay.content,result.content);
+    assert.equal(replay.contacts,result.contacts);
+    await assert.rejects(executeProteinStructureJob({operation:'analyze',input:{name:'input.json',text:prepared.content},options:{contactScope:'assembly'}}),/assembly/);
+  });
+});

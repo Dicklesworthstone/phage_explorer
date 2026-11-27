@@ -15,7 +15,8 @@
 import type { PhageFull, GeneInfo } from '../types';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 import { parseProteinReferenceBundle, validateProteinAlignmentInput, PROTEIN_ALIGNMENT_LIMITS,
-  type ProteinReferenceBundle, type ReferenceChain, type ProteinAlignmentInput } from '../protein-reference';
+  parseProteinCoordinates, validateProteinCoordinateInput, PROTEIN_COORDINATE_LIMITS,
+  type ProteinReferenceBundle, type ReferenceChain, type ProteinAlignmentInput, type ProteinCoordinateInput, type ParsedProteinCoordinates } from '../protein-reference';
 
 /** Descriptive measurements from supplied homologs and observed coordinates.
  * The illustrative model below remains a separate, explicitly opted-in method.
@@ -267,28 +268,22 @@ export function resolveProteinStructureOptions(reference: ProteinReferenceBundle
   return { proteinId, chainLabelAsymId, contactScope, contactCutoffAngstrom, minSequenceSeparation };
 }
 
-function proteinStructureResult(reference: ProteinReferenceBundle, options: ResolvedProteinStructureOptions, signal?: AbortSignal): ProteinStructureResult {
-  const protein = reference.proteins.find(item => item.id === options.proteinId)!;
-  const chain = options.chainLabelAsymId === null ? null : reference.chains.find(item => item.labelAsymId === options.chainLabelAsymId)!;
-  const partners = chain && options.contactScope === 'assembly' ? reference.chains.filter(item => item !== chain) : [];
+type GeometryChain = Pick<ReferenceChain, 'proteinId' | 'labelAsymId' | 'authAsymId' | 'start' | 'coordinates'>;
+
+/** One numerical kernel serves validated reference snapshots and explicit local
+ * mmCIF mappings. Neither caller can substitute an author residue number for a
+ * polymer position, fabricate missing coordinates or truncate contact output.
+ */
+function mappedProteinGeometry(sequence: string, chain: GeometryChain | null, partners: GeometryChain[],
+  options: Pick<ResolvedProteinStructureOptions, 'contactScope' | 'contactCutoffAngstrom' | 'minSequenceSeparation'>, signal?: AbortSignal) {
   const atoms = chain ? [...chain.coordinates].sort((a, b) => a.labelSeqId - b.labelSeqId) : [];
   const pairChecks = atoms.length * (atoms.length - 1) / 2 + atoms.length * partners.reduce((sum, item) => sum + item.coordinates.length, 0);
   if (pairChecks > PROTEIN_STRUCTURE_LIMITS.pairChecks) throw new Error('Protein geometry exceeds 20,000,000 pair checks. Select chain-only scope or a smaller explicit reference.');
-  const residues: ProteinStructureResult['residues'] = Array.from(protein.sequence, (aminoAcid, i) => ({
+  const residues: ProteinStructureResult['residues'] = Array.from(sequence, (aminoAcid, i) => ({
     position: i + 1, aminoAcid, alignment: null, coordinate: null, intrachainNeighbors: null,
     interchainNeighbors: null, comparedResidues: null, nearestNonlocalDistanceAngstrom: null,
   }));
-  const rows = reference.alignment.rows, target = rows.find(row => row.proteinId === protein.id);
-  if (target) {
-    let position = 0;
-    for (let column = 0; column < target.alignedSequence.length; column++) {
-      if (column % 256 === 0) proteinActive(signal);
-      if (target.alignedSequence[column] === '-') continue;
-      const { observed, total, gaps, entropyBits } = proteinColumnEvidence(rows, column);
-      residues[position++].alignment = { column: column + 1, observed, total, gaps, entropyBits };
-    }
-  }
-  const identity = (source: ReferenceChain, atom: ReferenceChainCoordinate): ResidueIdentity => ({
+  const identity = (source: GeometryChain, atom: ReferenceChainCoordinate): ResidueIdentity => ({
     proteinId: source.proteinId, labelAsymId: source.labelAsymId, authAsymId: source.authAsymId,
     proteinPosition: source.start + atom.labelSeqId - 1, labelSeqId: atom.labelSeqId,
     authSeqId: atom.authSeqId, insertionCode: atom.insertionCode, aminoAcid: atom.aminoAcid,
@@ -299,7 +294,7 @@ function proteinStructureResult(reference: ProteinReferenceBundle, options: Reso
     for (const atom of atoms) Object.assign(residues[chain.start + atom.labelSeqId - 2], {
       coordinate: { ...atom }, intrachainNeighbors: 0, interchainNeighbors: options.contactScope === 'assembly' ? 0 : null, comparedResidues: 0,
     });
-    const compare = (a: ReferenceChainCoordinate, b: ReferenceChainCoordinate, other: ReferenceChain, kind: 'intrachain' | 'interchain') => {
+    const compare = (a: ReferenceChainCoordinate, b: ReferenceChainCoordinate, other: GeometryChain, kind: 'intrachain' | 'interchain') => {
       if (checks++ % 2048 === 0) proteinActive(signal);
       const distanceAngstrom = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
       if (!Number.isFinite(distanceAngstrom)) throw new Error('The supplied coordinates produce a nonfinite C-alpha distance.');
@@ -323,14 +318,33 @@ function proteinStructureResult(reference: ProteinReferenceBundle, options: Reso
       for (const partner of partners) for (const atom of partner.coordinates) compare(atoms[i], atom, partner, 'interchain');
     }
   }
+  return { residues, contacts, coordinateResidues: atoms.length, intrachainContacts, interchainContacts };
+}
+
+function proteinStructureResult(reference: ProteinReferenceBundle, options: ResolvedProteinStructureOptions, signal?: AbortSignal): ProteinStructureResult {
+  const protein = reference.proteins.find(item => item.id === options.proteinId)!;
+  const chain = options.chainLabelAsymId === null ? null : reference.chains.find(item => item.labelAsymId === options.chainLabelAsymId)!;
+  const partners = chain && options.contactScope === 'assembly' ? reference.chains.filter(item => item !== chain) : [];
+  const geometry = mappedProteinGeometry(protein.sequence, chain, partners, options, signal);
+  const { residues, contacts, coordinateResidues, intrachainContacts, interchainContacts } = geometry;
+  const rows = reference.alignment.rows, target = rows.find(row => row.proteinId === protein.id);
+  if (target) {
+    let position = 0;
+    for (let column = 0; column < target.alignedSequence.length; column++) {
+      if (column % 256 === 0) proteinActive(signal);
+      if (target.alignedSequence[column] === '-') continue;
+      const { observed, total, gaps, entropyBits } = proteinColumnEvidence(rows, column);
+      residues[position++].alignment = { column: column + 1, observed, total, gaps, entropyBits };
+    }
+  }
   const alignmentResidues = residues.filter(residue => residue.alignment !== null).length;
   const entropyResidues = residues.filter(residue => residue.alignment !== null && residue.alignment.entropyBits !== null).length;
   const result: ProteinStructureResult = { protein: { id: protein.id, accession: protein.accession, length: protein.sequence.length },
     chain: chain ? { pdbId: chain.pdbId, entryVersion: chain.entryVersion, assemblyId: chain.assemblyId,
-      labelAsymId: chain.labelAsymId, authAsymId: chain.authAsymId, start: chain.start, end: chain.end, observedResidues: atoms.length } : null,
+      labelAsymId: chain.labelAsymId, authAsymId: chain.authAsymId, start: chain.start, end: chain.end, observedResidues: coordinateResidues } : null,
     alignment: { rows: rows.length, columns: rows[0].alignedSequence.length, targetPresent: !!target }, residues, contacts,
     coverage: { proteinResidues: residues.length, alignmentResidues, entropyResidues, insufficientAlignmentResidues: alignmentResidues - entropyResidues,
-      coordinateResidues: atoms.length, unmappedResidues: residues.length - atoms.length, intrachainContacts, interchainContacts },
+      coordinateResidues, unmappedResidues: residues.length - coordinateResidues, intrachainContacts, interchainContacts },
     limitations: [...PROTEIN_STRUCTURE_LIMITATIONS],
   };
   if (!chain) result.limitations.push('No chain was selected for this protein; all geometry is unavailable.');
@@ -428,6 +442,122 @@ export function exportProteinStructureTsv(record: AnalysisRecord, section: 'resi
     const cells = (identity: ResidueIdentity) => [identity.proteinId, identity.labelAsymId, identity.authAsymId, identity.proteinPosition, identity.labelSeqId, identity.authSeqId, identity.insertionCode, identity.aminoAcid];
     rows = result.contacts.map(contact => [contact.kind, ...cells(contact.query), ...cells(contact.partner), contact.distanceAngstrom]);
   } else throw new Error('Choose residues or contacts for protein structure TSV export.');
+  return [...comments, header.join('\t'), ...rows.map(row => row.map(proteinTsvCell).join('\t'))].join('\n') + '\n';
+}
+
+export const PROTEIN_COORDINATE_METHOD = { id: 'supplied-mmcif-protein-geometry', version: '1',
+  implementation: 'TypeScript exact user-declared polymer-offset mapping and shared C-alpha Euclidean geometry for one explicit mmCIF chain/model/alternate location' } as const;
+export interface ProteinCoordinateResult {
+  protein: { id: string; description: string; length: number };
+  structure: ParsedProteinCoordinates['selection'] & { labelAsymId: string; authAsymId: string; proteinStart: number };
+  residues: ProteinStructureResult['residues'];
+  contacts: ProteinStructureResult['contacts'];
+  coverage: { proteinResidues: number; coordinateResidues: number; unmappedResidues: number; intrachainContacts: number };
+  limitations: string[];
+}
+export interface ProteinCoordinateExperiment {
+  input: ProteinCoordinateInput; options: ResolvedProteinStructureOptions; result: ProteinCoordinateResult; record: AnalysisRecord;
+}
+const PROTEIN_COORDINATE_REFERENCE = { id: 'supplied-mmcif-coordinate-conventions', version: '1',
+  description: 'wwPDB PDBx/mmCIF coordinate conventions: https://mmcif.wwpdb.org/docs/user-guide/resources/coordinate_section.html . label_seq_id includes missing polymer residues; auth_seq_id and insertion codes are retained labels. Only the explicit chain/model/alternate location is compared.' };
+const PROTEIN_COORDINATE_LIMITATIONS = [
+  'The structure, protein sequence, source attribution and polymer offset are supplied locally. Residue agreement checks that explicit mapping; it does not identify an accession, establish homology or verify a current genomic CDS.',
+  'Coordinates may originate from an experimental structure or a predicted model. The program does not authenticate the source or establish experimental accuracy, resolution or model confidence.',
+  'Distances are Euclidean C-alpha separations in Angstroms within the selected chain and model. Missing coordinates and zero-occupancy atoms are unavailable, not interpolated; other models, chains and assembly copies are not combined.',
+  'An explicit alternate location includes that conformer and atoms without an alternate identifier. Other conformers are omitted; duplicate selected residue identities are rejected. Positive fractional occupancy is retained without weighting distances.',
+  'C-alpha proximity is not an all-atom clash, solvent accessibility, binding affinity, docking energy, mutation effect or host-range prediction. This input contains no homolog alignment, so entropy is unavailable.',
+];
+
+export function resolveProteinCoordinateOptions(input: ProteinCoordinateInput, config: ProteinStructureOptions = {}): ResolvedProteinStructureOptions {
+  proteinOptionKeys(config);
+  if (config.proteinId !== undefined && config.proteinId !== input.protein.id ||
+      config.chainLabelAsymId !== undefined && config.chainLabelAsymId !== input.structure.labelAsymId ||
+      config.contactScope !== undefined && config.contactScope !== 'chain') {
+    throw new Error('Local mmCIF geometry uses its explicitly mapped protein and chain; assembly scope and implicit remapping are unsupported.');
+  }
+  const contactCutoffAngstrom = config.contactCutoffAngstrom === undefined ? 8 : config.contactCutoffAngstrom;
+  const minSequenceSeparation = config.minSequenceSeparation === undefined ? 3 : config.minSequenceSeparation;
+  if (typeof contactCutoffAngstrom !== 'number' || !Number.isFinite(contactCutoffAngstrom) || contactCutoffAngstrom <= 0 || contactCutoffAngstrom > 30) throw new Error('Contact cutoff must be greater than zero and at most 30 Angstroms.');
+  if (!Number.isSafeInteger(minSequenceSeparation) || minSequenceSeparation < 1 || minSequenceSeparation > 10_000) throw new Error('Minimum sequence separation must be an integer from 1 to 10,000 residues.');
+  return { proteinId: input.protein.id, chainLabelAsymId: input.structure.labelAsymId, contactScope: 'chain', contactCutoffAngstrom, minSequenceSeparation };
+}
+
+export async function createProteinCoordinateExperiment(value: unknown, config: ProteinStructureOptions = {}, signal?: AbortSignal): Promise<ProteinCoordinateExperiment> {
+  proteinActive(signal);
+  proteinJsonBudget(value, PROTEIN_COORDINATE_LIMITS.bytes);
+  const parsed = parseProteinCoordinates(value), { input, chain, selection } = parsed;
+  const options = resolveProteinCoordinateOptions(input, config);
+  const geometry = mappedProteinGeometry(input.protein.sequence, chain, [], options, signal);
+  const result: ProteinCoordinateResult = {
+    protein: { id: input.protein.id, description: input.protein.description, length: input.protein.sequence.length },
+    structure: { ...selection, labelAsymId: chain.labelAsymId, authAsymId: chain.authAsymId, proteinStart: chain.start },
+    residues: geometry.residues, contacts: geometry.contacts,
+    coverage: { proteinResidues: input.protein.sequence.length, coordinateResidues: geometry.coordinateResidues,
+      unmappedResidues: input.protein.sequence.length - geometry.coordinateResidues, intrachainContacts: geometry.intrachainContacts },
+    limitations: [...PROTEIN_COORDINATE_LIMITATIONS],
+  };
+  const field = { label: 'Supplied mmCIF C-alpha geometry at explicitly mapped protein positions', value: analysisJson(result),
+    units: 'records' as const, coverage: { available: geometry.coordinateResidues, total: input.protein.sequence.length, unit: 'residues' as const },
+    limitations: result.limitations };
+  const recordOptions = { method: PROTEIN_COORDINATE_METHOD,
+    inputs: [{ id: 'coordinates', accession: null, source: input.source.kind,
+      description: 'Exact local mmCIF text, supplied protein sequence, explicit chain/model/alternate-location selection and polymer-to-protein offset. No deposited-complex or genome identity is implied.',
+      data: analysisJson(input) }], parameters: { ...options }, seed: null, references: [PROTEIN_COORDINATE_REFERENCE], fields: {
+      geometry: input.source.kind === 'demo' ? { ...field, kind: 'demo' as const,
+        assumptions: ['The user explicitly identified this supplied coordinate input as a teaching demonstration.'] }
+        : { ...field, kind: 'sequence-score' as const },
+      alignment: { kind: 'unavailable' as const, label: 'Homolog alignment diversity', value: null, units: null,
+        coverage: { available: 0, total: input.protein.sequence.length, unit: 'residues' as const }, limitations: result.limitations,
+        missingInputs: ['A supplied coordinate file and one target sequence do not provide a homolog alignment.'] },
+    } };
+  proteinJsonBudget({ ...recordOptions, format: 'phage-explorer-analysis', version: 1, cacheKey: '0'.repeat(64), resultId: '0'.repeat(64),
+    inputs: recordOptions.inputs.map(item => ({ ...item, sha256: '0'.repeat(64) })) }, 10 * 1024 * 1024, true);
+  const record = await createAnalysisRecord(recordOptions);
+  proteinActive(signal);
+  return { input, options, result, record };
+}
+
+export async function replayProteinCoordinateExperiment(content: string, signal?: AbortSignal): Promise<ProteinCoordinateExperiment> {
+  proteinActive(signal);
+  const saved = await parseAnalysisRecord(content, { methodId: PROTEIN_COORDINATE_METHOD.id, methodVersion: PROTEIN_COORDINATE_METHOD.version });
+  if (proteinCanonical(saved.method) !== proteinCanonical(PROTEIN_COORDINATE_METHOD) ||
+      proteinCanonical(saved.references) !== proteinCanonical([PROTEIN_COORDINATE_REFERENCE]) || saved.seed !== null ||
+      saved.inputs.length !== 1 || saved.inputs[0].id !== 'coordinates') throw new Error('Local mmCIF method, references, seed or input contract differs.');
+  const fresh = await createProteinCoordinateExperiment(saved.inputs[0].data, saved.parameters, signal);
+  if (proteinCanonical(fresh.options) !== proteinCanonical(saved.parameters) ||
+      fresh.record.cacheKey !== saved.cacheKey || fresh.record.resultId !== saved.resultId) throw new Error('Fresh local mmCIF geometry differs from the saved input, settings or result.');
+  return fresh;
+}
+
+/** Use only records returned by the producer or a fresh accepted replay. */
+export function exportProteinCoordinateTsv(record: AnalysisRecord, section: 'residues' | 'contacts' = 'residues'): string {
+  proteinJsonBudget(record, 10 * 1024 * 1024, true);
+  const result = record.fields.geometry?.value as unknown as ProteinCoordinateResult;
+  if (proteinCanonical(record.method) !== proteinCanonical(PROTEIN_COORDINATE_METHOD) || record.inputs.length !== 1 ||
+      record.inputs[0].id !== 'coordinates' || !result?.protein || !result.structure || !Array.isArray(result.residues) || !Array.isArray(result.contacts)) {
+    throw new Error('Expected a produced or replayed local mmCIF geometry result.');
+  }
+  const input = validateProteinCoordinateInput(record.inputs[0].data);
+  const comments = ['# method=' + record.method.id + '; version=' + record.method.version + '; result=' + record.resultId + '; inputSha256=' + record.inputs[0].sha256,
+    '# protein=' + proteinCanonical(result.protein) + '; selection=' + proteinCanonical(result.structure) + '; options=' + proteinCanonical(record.parameters),
+    '# source_attribution=' + proteinCanonical(input.source),
+    '# Protein and label sequence positions are one-based. Author numbers and insertion codes are labels, not sequence offsets. Empty cells mean no supplied coordinate/comparison.',
+    '# Distances are within-chain C-alpha separations in Angstroms; no all-atom, assembly, binding or experimental-accuracy claim is implied.',
+    '# limitations=' + proteinCanonical(result.limitations)];
+  let header: string[], rows: Array<Array<string | number | null>>;
+  if (section === 'residues') {
+    header = ['protein_position_1based', 'amino_acid', 'label_chain', 'author_chain', 'label_seq_id', 'auth_seq_id', 'insertion_code',
+      'x_angstrom', 'y_angstrom', 'z_angstrom', 'intrachain_neighbors', 'compared_residues', 'nearest_nonlocal_distance_angstrom'];
+    rows = result.residues.map(row => [row.position, row.aminoAcid, result.structure.labelAsymId, result.structure.authAsymId,
+      row.coordinate?.labelSeqId ?? null, row.coordinate?.authSeqId ?? null, row.coordinate?.insertionCode ?? null,
+      row.coordinate?.x ?? null, row.coordinate?.y ?? null, row.coordinate?.z ?? null, row.intrachainNeighbors,
+      row.comparedResidues, row.nearestNonlocalDistanceAngstrom]);
+  } else if (section === 'contacts') {
+    header = ['query_protein', 'query_label_chain', 'query_author_chain', 'query_protein_position_1based', 'query_label_seq_id', 'query_auth_seq_id', 'query_insertion_code', 'query_amino_acid',
+      'partner_protein', 'partner_label_chain', 'partner_author_chain', 'partner_protein_position_1based', 'partner_label_seq_id', 'partner_auth_seq_id', 'partner_insertion_code', 'partner_amino_acid', 'distance_angstrom'];
+    const cells = (id: ResidueIdentity) => [id.proteinId, id.labelAsymId, id.authAsymId, id.proteinPosition, id.labelSeqId, id.authSeqId, id.insertionCode, id.aminoAcid];
+    rows = result.contacts.map(contact => [...cells(contact.query), ...cells(contact.partner), contact.distanceAngstrom]);
+  } else throw new Error('Choose residues or contacts for local mmCIF TSV export.');
   return [...comments, header.join('\t'), ...rows.map(row => row.map(proteinTsvCell).join('\t'))].join('\n') + '\n';
 }
 

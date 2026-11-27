@@ -1,5 +1,5 @@
 import proteinReferenceSnapshot from '../../../../data/protein-references/lambda-lamb-v1.json';
-import { parseProteinReferenceBundle, proteinReferenceContentHash, type ProteinReferenceBundle, parseProteinAlignmentFasta } from '../protein-reference';
+import { parseProteinReferenceBundle, proteinReferenceContentHash, type ProteinReferenceBundle, parseProteinAlignmentFasta, prepareProteinCoordinateInput } from '../protein-reference';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 import { describe, expect, it } from 'bun:test';
 import type { PhageFull, GeneInfo } from '../types';
@@ -18,6 +18,7 @@ import {
   proteinStructureResultFromRecord, exportProteinStructureTsv, type ProteinStructureOptions,
   PROTEIN_ALIGNMENT_METHOD, createProteinAlignmentExperiment, replayProteinAlignmentExperiment,
   resolveProteinAlignmentOptions, exportProteinAlignmentTsv,
+  createProteinCoordinateExperiment, replayProteinCoordinateExperiment, exportProteinCoordinateTsv, PROTEIN_COORDINATE_METHOD,
 } from './tail-fiber-structure';
 
 function createMockPhage(overrides: Partial<PhageFull> = {}): PhageFull {
@@ -724,5 +725,106 @@ describe('Mapped reference protein evidence, independent of illustrative structu
     pending.abort();
     await expect(work).rejects.toThrow('cancelled');
     await expect(replayProteinStructureExperiment('{}', stopped.signal)).rejects.toThrow('cancelled');
+  });
+});
+
+
+describe('local mmCIF geometry, exact exports and replay', () => {
+  const content = 'data_literal\nloop_\n' + ['group_PDB', 'type_symbol', 'label_atom_id', 'label_alt_id', 'label_comp_id', 'label_asym_id',
+    'label_seq_id', 'auth_asym_id', 'auth_seq_id', 'pdbx_PDB_ins_code', 'Cartn_x', 'Cartn_y', 'Cartn_z', 'occupancy', 'pdbx_PDB_model_num']
+    .map(name => '_atom_site.' + name).join('\n') + '\n' + [
+      'ATOM C CA . ALA A 1 Z -2 ? 0 0 0 1 1',
+      'ATOM C CA . ASP A 3 Z 10 A 3 4 0 1 1',
+      'ATOM C CA . GLY A 6 Z 10 B 0 0 12 1 1',
+    ].join('\n') + '\n#\n';
+  const input = () => prepareProteinCoordinateInput(content, '>target private sequence\nMKACDEFGH\n', 'literal.cif',
+    { labelAsymId: 'A', proteinStart: 3 }, { kind: 'local', description: 'Literal coordinate control, not a biological structure', reference: null });
+
+  it('agrees with independently enumerated 5/12/13-Angstrom pairs and preserves missing residues', async () => {
+    const experiment = await createProteinCoordinateExperiment(input(), { contactCutoffAngstrom: 12, minSequenceSeparation: 3 });
+    const { result, record } = experiment;
+    expect(result.coverage).toEqual({ proteinResidues: 9, coordinateResidues: 3, unmappedResidues: 6, intrachainContacts: 1 });
+    expect(result.contacts.map(row => [row.query.proteinPosition, row.partner.proteinPosition, row.distanceAngstrom])).toEqual([[3, 8, 12]]);
+    expect(result.residues.filter(row => row.coordinate).map(row =>
+      [row.position, row.intrachainNeighbors, row.comparedResidues, row.nearestNonlocalDistanceAngstrom])).toEqual([
+      [3, 1, 1, 12], [5, 0, 1, 13], [8, 1, 2, 12],
+    ]);
+    expect(result.residues[3]).toEqual({ position: 4, aminoAcid: 'C', alignment: null, coordinate: null,
+      intrachainNeighbors: null, interchainNeighbors: null, comparedResidues: null, nearestNonlocalDistanceAngstrom: null });
+    expect(result.residues.every(row => row.alignment === null && row.interchainNeighbors === null)).toBe(true);
+    expect(record.method).toEqual(PROTEIN_COORDINATE_METHOD);
+    expect(record.inputs[0].source).toBe('local');
+    expect(record.inputs[0].accession).toBeNull();
+    expect(record.fields.alignment.kind).toBe('unavailable');
+    expect(record.inputs[0].data).toEqual(analysisJson(input()));
+  });
+
+  it('uses inclusive cutoff and polymer separation, with zero neighbors distinct from missing geometry', async () => {
+    const tight = await createProteinCoordinateExperiment(input(), { contactCutoffAngstrom: 5, minSequenceSeparation: 1 });
+    expect(tight.result.contacts.map(row => [row.query.proteinPosition, row.partner.proteinPosition, row.distanceAngstrom])).toEqual([[3, 5, 5]]);
+    expect(tight.result.residues[7].intrachainNeighbors).toBe(0);
+    expect(tight.result.residues[7].nearestNonlocalDistanceAngstrom).toBe(12);
+    const noEligible = await createProteinCoordinateExperiment(input(), { minSequenceSeparation: 10 });
+    expect(noEligible.result.residues[2].intrachainNeighbors).toBe(0);
+    expect(noEligible.result.residues[2].comparedResidues).toBe(0);
+    expect(noEligible.result.residues[2].nearestNonlocalDistanceAngstrom).toBeNull();
+    await expect(createProteinCoordinateExperiment(input(), { contactScope: 'assembly' })).rejects.toThrow(/assembly/);
+    await expect(createProteinCoordinateExperiment(input(), { chainLabelAsymId: null })).rejects.toThrow(/explicitly/);
+  });
+
+  it('exports every mapped and missing residue and recomputes the complete source identity', async () => {
+    const first = await createProteinCoordinateExperiment(input(), { contactCutoffAngstrom: 12, minSequenceSeparation: 3 });
+    const text = serializeAnalysisRecord(first.record);
+    const replay = await replayProteinCoordinateExperiment(text);
+    expect(serializeAnalysisRecord(replay.record)).toBe(text);
+    const residues = exportProteinCoordinateTsv(replay.record).split('\n').filter(line => line && !line.startsWith('#'));
+    expect(residues).toHaveLength(10);
+    expect(residues[3]).toBe('3\tA\tA\tZ\t1\t-2\t\t0\t0\t0\t1\t1\t12');
+    expect(residues[4]).toBe('4\tC\tA\tZ\t\t\t\t\t\t\t\t\t');
+    const contacts = exportProteinCoordinateTsv(replay.record, 'contacts').split('\n').filter(line => line && !line.startsWith('#'));
+    expect(contacts).toHaveLength(2);
+    expect(contacts[1]).toBe('target\tA\tZ\t3\t1\t-2\t\tA\ttarget\tA\tZ\t8\t6\t10\tB\tG\t12');
+    const changed = input(); changed.structure.content += '# changed supplied text\n';
+    expect((await createProteinCoordinateExperiment(changed, first.options)).record.resultId).not.toBe(first.record.resultId);
+  });
+
+  it('rejects a rehashed forged distance and preserves an explicitly declared demonstration', async () => {
+    const original = await createProteinCoordinateExperiment(input(), { contactCutoffAngstrom: 12, minSequenceSeparation: 3 });
+    const forgedFields = structuredClone(original.record.fields);
+    (forgedFields.geometry.value as any).contacts[0].distanceAngstrom = 9;
+    const forged = await createAnalysisRecord({ ...original.record, fields: forgedFields });
+    await expect(replayProteinCoordinateExperiment(serializeAnalysisRecord(forged))).rejects.toThrow(/differs/);
+    const demo = input(); demo.source.kind = 'demo';
+    expect((await createProteinCoordinateExperiment(demo)).record.fields.geometry.kind).toBe('demo');
+  });
+
+  it('uses the same distances as the retained real Lambda chain without requiring receptor/embedding metadata', async () => {
+    const reference = await parseProteinReferenceBundle(proteinReferenceSnapshot);
+    const target = reference.proteins.find(row => row.id === reference.cds.proteinId)!;
+    const chain = reference.chains.find(row => row.proteinId === target.id)!;
+    const aa3: Record<string, string> = { A:'ALA', R:'ARG', N:'ASN', D:'ASP', C:'CYS', Q:'GLN', E:'GLU', G:'GLY', H:'HIS',
+      I:'ILE', L:'LEU', K:'LYS', M:'MET', F:'PHE', P:'PRO', S:'SER', T:'THR', W:'TRP', Y:'TYR', V:'VAL' };
+    // This is a transparent mmCIF re-encoding of retained CC0 observed coordinates,
+    // not an assertion that this generated text is the original downloaded file.
+    const realCif = content.slice(0, content.indexOf('\nATOM')) + '\n' + chain.coordinates.map(atom => [
+      'ATOM', 'C', 'CA', '.', aa3[atom.aminoAcid], chain.labelAsymId, atom.labelSeqId, chain.authAsymId,
+      atom.authSeqId, atom.insertionCode || '?', atom.x, atom.y, atom.z, 1, 1,
+    ].join(' ')).join('\n') + '\n#\n';
+    const local = prepareProteinCoordinateInput(realCif, '>' + target.id + '\n' + target.sequence, 'Retained 8XCJ chain coordinates',
+      { labelAsymId: chain.labelAsymId, proteinStart: chain.start },
+      { kind: 'local', description: 'C-alpha records re-encoded from the pinned Lambda reference bundle', reference: reference.bundleSha256 });
+    const supplied = await createProteinCoordinateExperiment(local);
+    const deposited = await createProteinStructureExperiment(reference, { contactScope: 'chain' });
+    expect(supplied.result.contacts).toEqual(deposited.result.contacts);
+    expect(supplied.result.residues.map(row => row.coordinate)).toEqual(deposited.result.residues.map(row => row.coordinate));
+    expect(supplied.result.coverage.coordinateResidues).toBe(420);
+  });
+
+  it('honors cancellation and refuses budgets without returning partial geometry', async () => {
+    const controller = new AbortController(); controller.abort();
+    await expect(createProteinCoordinateExperiment(input(), {}, controller.signal)).rejects.toThrow(/cancelled/);
+    await expect(createProteinCoordinateExperiment(input(), { contactCutoffAngstrom: Infinity })).rejects.toThrow(/cutoff/);
+    await expect(createProteinCoordinateExperiment(input(), { contactCutoffAngstrom: null as unknown as number })).rejects.toThrow(/cutoff/);
+    await expect(createProteinCoordinateExperiment(input(), { minSequenceSeparation: null as unknown as number })).rejects.toThrow(/separation/);
   });
 });

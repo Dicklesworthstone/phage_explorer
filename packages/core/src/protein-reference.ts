@@ -217,6 +217,233 @@ export function parseProteinAlignmentFasta(content: string, name: string,
   return validateProteinAlignmentInput({ format: 'phage-explorer-protein-alignment', version: 1, name, source, rows });
 }
 
+/** A local coordinate file is independent of a deposited interaction reference.
+ * The supplied offset maps label_seq_id 1 to proteinStart; author residue numbers
+ * are labels only. No sequence alignment, accession or assembly is inferred.
+ */
+export interface ProteinCoordinateInput {
+  format: 'phage-explorer-protein-coordinates';
+  version: 1;
+  name: string;
+  source: ProteinAlignmentInput['source'];
+  protein: { id: string; description: string; sequence: string };
+  structure: { format: 'mmcif'; content: string; labelAsymId: string; proteinStart: number;
+    model: number; alternateLocation: string | null };
+}
+export const PROTEIN_COORDINATE_LIMITS = { bytes: 4 * 1024 * 1024, proteinBytes: 128 * 1024,
+  residues: 20_000, observedResidues: 4096, columns: 128 } as const;
+export interface ParsedProteinCoordinates {
+  input: ProteinCoordinateInput;
+  chain: Pick<ReferenceChain, 'proteinId' | 'labelAsymId' | 'authAsymId' | 'start' | 'coordinates'>;
+  selection: { dataBlock: string; model: number; alternateLocation: string | null;
+    minimumLabelSeqId: number; maximumLabelSeqId: number; omittedAlternateAtoms: number; zeroOccupancyAtoms: number };
+}
+
+export function validateProteinCoordinateInput(value: unknown): ProteinCoordinateInput {
+  if (!alignmentObject(value) || value.format !== 'phage-explorer-protein-coordinates' || value.version !== 1) {
+    throw new Error('Unsupported protein coordinate format/version.');
+  }
+  alignmentKeys(value, ['format', 'version', 'name', 'source', 'protein', 'structure'], 'Protein coordinate input');
+  const name = alignmentText(value.name, 'Coordinate input name');
+  if (!alignmentObject(value.source)) throw new Error('Coordinate source attribution is required.');
+  alignmentKeys(value.source, ['kind', 'description', 'reference'], 'Coordinate source');
+  if (value.source.kind !== 'local' && value.source.kind !== 'demo') throw new Error('Coordinate source must be local or demo.');
+  const source: ProteinCoordinateInput['source'] = { kind: value.source.kind,
+    description: alignmentText(value.source.description, 'Source description'),
+    reference: value.source.reference === null ? null : alignmentText(value.source.reference, 'Source reference') };
+  if (!alignmentObject(value.protein)) throw new Error('A supplied protein sequence is required.');
+  alignmentKeys(value.protein, ['id', 'description', 'sequence'], 'Coordinate protein');
+  const id = alignmentText(value.protein.id, 'Protein record ID', false, 120);
+  if (/\s/.test(id)) throw new Error('Protein record IDs cannot contain whitespace.');
+  const description = alignmentText(value.protein.description, 'Protein record description', true);
+  const sequence = value.protein.sequence;
+  if (typeof sequence !== 'string' || sequence.length < 1 || sequence.length > PROTEIN_COORDINATE_LIMITS.residues || !AA.test(sequence)) {
+    throw new Error('Supply 1–20,000 canonical uppercase amino acids; gaps, stops and unknown residues cannot establish an exact coordinate mapping.');
+  }
+  if (!alignmentObject(value.structure)) throw new Error('A local mmCIF structure and explicit chain mapping are required.');
+  alignmentKeys(value.structure, ['format', 'content', 'labelAsymId', 'proteinStart', 'model', 'alternateLocation'], 'Coordinate structure');
+  const structure = value.structure;
+  if (structure.format !== 'mmcif' || typeof structure.content !== 'string' || !structure.content.trim() ||
+      structure.content.length > PROTEIN_COORDINATE_LIMITS.bytes || new TextEncoder().encode(structure.content).length > PROTEIN_COORDINATE_LIMITS.bytes) {
+    throw new Error('Supply an mmCIF text file of at most 4 MiB.');
+  }
+  const labelAsymId = alignmentText(structure.labelAsymId, 'Label chain ID', false, 128);
+  if (/\s/.test(labelAsymId) || ['.', '?'].includes(labelAsymId)) throw new Error('Choose an explicit mmCIF label_asym_id.');
+  if (!integer(structure.proteinStart, 1, sequence.length)) throw new Error('The protein position corresponding to label_seq_id 1 must lie within the supplied protein.');
+  if (!integer(structure.model, 1, 9999)) throw new Error('Choose a model number from 1 to 9999.');
+  const alternateLocation = structure.alternateLocation === null ? null : alignmentText(structure.alternateLocation, 'Alternate location ID', false, 16);
+  if (alternateLocation !== null && (/\s/.test(alternateLocation) || ['.', '?'].includes(alternateLocation))) throw new Error('An alternate location must be an explicit ID, or null for unambiguous atoms only.');
+  const input: ProteinCoordinateInput = { format: 'phage-explorer-protein-coordinates', version: 1, name, source,
+    protein: { id, description, sequence }, structure: { format: 'mmcif', content: structure.content, labelAsymId,
+      proteinStart: structure.proteinStart, model: structure.model, alternateLocation } };
+  if (new TextEncoder().encode(JSON.stringify(input)).length > PROTEIN_COORDINATE_LIMITS.bytes) throw new Error('Protein coordinate input, including sequence and escaped mmCIF text, exceeds 4 MiB.');
+  return input;
+}
+
+export function prepareProteinCoordinateInput(content: string, fasta: string, name: string,
+  mapping: { labelAsymId: string; proteinStart: number; model?: number; alternateLocation?: string | null },
+  source: ProteinCoordinateInput['source'] = { kind: 'local', description: name, reference: null }): ProteinCoordinateInput {
+  if (typeof fasta !== 'string' || fasta.length > PROTEIN_COORDINATE_LIMITS.proteinBytes ||
+      new TextEncoder().encode(fasta).length > PROTEIN_COORDINATE_LIMITS.proteinBytes) throw new Error('Protein FASTA exceeds 128 KiB.');
+  if (!alignmentObject(mapping) || Object.keys(mapping).some(key => !['labelAsymId', 'proteinStart', 'model', 'alternateLocation'].includes(key))) throw new Error('Unsupported protein coordinate mapping.');
+  let protein: ProteinCoordinateInput['protein'] | null = null;
+  for (const line of fasta.replace(/^\uFEFF/, '').split(/\r\n?|\n/)) {
+    if (!line.trim()) continue;
+    if (line.startsWith('>')) {
+      if (protein) throw new Error('Supply exactly one protein FASTA record for the selected chain.');
+      const header = line.slice(1).trim(), split = header.search(/\s/);
+      protein = { id: split < 0 ? header : header.slice(0, split), description: split < 0 ? '' : header.slice(split).trim(), sequence: '' };
+    } else {
+      if (!protein) throw new Error('Expected protein FASTA beginning with a >record header.');
+      protein.sequence += line.replace(/[ \t]/g, '').toUpperCase();
+      if (protein.sequence.length > PROTEIN_COORDINATE_LIMITS.residues) throw new Error('Protein sequence exceeds 20,000 residues.');
+    }
+  }
+  return validateProteinCoordinateInput({ format: 'phage-explorer-protein-coordinates', version: 1, name, source, protein,
+    structure: { format: 'mmcif', content, labelAsymId: mapping.labelAsymId, proteinStart: mapping.proteinStart,
+      model: mapping.model ?? 1, alternateLocation: mapping.alternateLocation ?? null } });
+}
+
+interface CoordinateCifToken { text: string; bare: boolean }
+/** Streaming CIF1 tokens support wrapped loops, quotes and semicolon text without
+ * building a token array for the complete file. Category/item names are case-insensitive.
+ * https://mmcif.wwpdb.org/docs/tutorials/mechanics/pdbx-mmcif-syntax.html
+ */
+function* coordinateCifTokens(content: string): Generator<CoordinateCifToken> {
+  let i = content.charCodeAt(0) === 0xfeff ? 1 : 0;
+  while (i < content.length) {
+    if (/\s/.test(content[i])) { i++; continue; }
+    if (content[i] === '#') { while (i < content.length && content[i] !== '\n') i++; continue; }
+    if (content[i] === ';' && (i === 0 || content[i - 1] === '\n')) {
+      const start = ++i;
+      while (i < content.length && !(content[i] === ';' && content[i - 1] === '\n')) i++;
+      if (i === content.length) throw new Error('Unclosed mmCIF semicolon text.');
+      const text = content.slice(start, i++);
+      if (i < content.length && !/\s/.test(content[i]) && content[i] !== '#') throw new Error('Invalid mmCIF semicolon delimiter.');
+      yield { text, bare: false }; continue;
+    }
+    const quote = content[i];
+    if (quote === "'" || quote === '"') {
+      const start = ++i;
+      while (i < content.length && !(content[i] === quote && (i + 1 === content.length || /\s/.test(content[i + 1])))) {
+        if (content[i] === '\n' || content[i] === '\r') throw new Error('Quoted mmCIF values cannot span lines; use semicolon text.');
+        i++;
+      }
+      if (i === content.length) throw new Error('Unclosed quoted mmCIF value.');
+      yield { text: content.slice(start, i++), bare: false }; continue;
+    }
+    const start = i;
+    while (i < content.length && !/\s/.test(content[i])) i++;
+    yield { text: content.slice(start, i), bare: true };
+  }
+}
+const COORDINATE_AA3: Record<string, string> = { ALA: 'A', ARG: 'R', ASN: 'N', ASP: 'D', CYS: 'C', GLN: 'Q', GLU: 'E',
+  GLY: 'G', HIS: 'H', ILE: 'I', LEU: 'L', LYS: 'K', MET: 'M', PHE: 'F', PRO: 'P', SER: 'S', THR: 'T', TRP: 'W', TYR: 'Y', VAL: 'V' };
+const cifControl = (token: CoordinateCifToken | undefined): boolean => !!token?.bare &&
+  (/^_|^data_|^save_|^global_$/i.test(token.text) || /^(loop_|stop_)$/i.test(token.text));
+const cifNumber = (value: string, label: string): number => {
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value) || !Number.isFinite(Number(value))) {
+    throw new Error('Invalid finite mmCIF ' + label + '.');
+  }
+  return Number(value);
+};
+
+/** Only the explicit model and label chain enter geometry. Polymer indices include
+ * missing coordinates; author numbers never determine sequence placement.
+ * https://mmcif.wwpdb.org/docs/user-guide/resources/coordinate_section.html
+ */
+export function parseProteinCoordinates(value: unknown): ParsedProteinCoordinates {
+  const input = validateProteinCoordinateInput(value), { structure, protein } = input;
+  const iterator = coordinateCifTokens(structure.content);
+  let token = iterator.next().value as CoordinateCifToken | undefined;
+  const advance = () => { token = iterator.next().value as CoordinateCifToken | undefined; };
+  let dataBlock = '', atomLoop = false, omittedAlternateAtoms = 0, zeroOccupancyAtoms = 0, requestedAlternateSeen = false;
+  const coordinates: ReferenceChain['coordinates'] = [], positions = new Set<number>(), authors = new Set<string>(), authorPositions = new Set<string>();
+  while (token) {
+    const keyword = token.bare ? token.text.toLowerCase() : '';
+    if (keyword.startsWith('data_')) {
+      if (dataBlock || keyword.length === 5) throw new Error('Supply one named mmCIF data block; multiple structures cannot share a coordinate frame implicitly.');
+      dataBlock = token.text.slice(5); advance(); continue;
+    }
+    if (!dataBlock) throw new Error('Expected a named mmCIF data_ block.');
+    if (keyword === 'loop_') {
+      advance(); const headers: string[] = [];
+      while (token?.bare && token.text.startsWith('_')) {
+        const header = token.text.toLowerCase();
+        if (headers.includes(header) || headers.length === PROTEIN_COORDINATE_LIMITS.columns) throw new Error('Repeated or excessive mmCIF loop columns.');
+        headers.push(header); advance();
+      }
+      if (!headers.length || headers.some(header => header.split('.')[0] !== headers[0].split('.')[0])) throw new Error('An mmCIF loop requires unique columns from one category.');
+      const atoms = headers[0].startsWith('_atom_site.');
+      if (atoms && atomLoop) throw new Error('Multiple atom_site loops are ambiguous.');
+      const columns: Record<string, number> = {};
+      if (atoms) {
+        atomLoop = true;
+        for (const name of ['group_pdb', 'type_symbol', 'label_atom_id', 'label_alt_id', 'label_comp_id', 'label_asym_id',
+          'label_seq_id', 'auth_asym_id', 'auth_seq_id', 'pdbx_pdb_ins_code', 'cartn_x', 'cartn_y', 'cartn_z', 'occupancy', 'pdbx_pdb_model_num']) {
+          columns[name] = headers.indexOf('_atom_site.' + name);
+          if (columns[name] < 0) throw new Error('Missing required mmCIF atom_site column: ' + name + '.');
+        }
+      }
+      let row: string[] = [], rowCount = 0;
+      while (token && !cifControl(token)) {
+        row.push(token.text); advance();
+        if (row.length !== headers.length) continue;
+        const field = (name: string) => row[columns[name]];
+        rowCount++;
+        if (atoms && field('label_asym_id') === structure.labelAsymId && field('label_atom_id') === 'CA') {
+          const model = cifNumber(field('pdbx_pdb_model_num'), 'model number');
+          if (!Number.isSafeInteger(model) || model < 1) throw new Error('Invalid integer mmCIF model number.');
+          if (model === structure.model) {
+            const occupancy = cifNumber(field('occupancy'), 'occupancy');
+            if (occupancy < 0 || occupancy > 1) throw new Error('C-alpha occupancy must lie between zero and one.');
+            if (occupancy === 0) zeroOccupancyAtoms++;
+            else {
+              const alternate = ['.', '?'].includes(field('label_alt_id')) ? null : field('label_alt_id');
+              if (alternate && structure.alternateLocation === null) throw new Error('Alternate C-alpha positions require an explicit alternate location ID.');
+              if (alternate && alternate !== structure.alternateLocation) omittedAlternateAtoms++;
+              else {
+                if (alternate) requestedAlternateSeen = true;
+                const labelSeqId = cifNumber(field('label_seq_id'), 'label sequence ID'), authSeqId = cifNumber(field('auth_seq_id'), 'author sequence ID');
+                const aminoAcid = COORDINATE_AA3[field('label_comp_id')];
+                const position = structure.proteinStart + labelSeqId - 1;
+                if (field('group_pdb') !== 'ATOM' || field('type_symbol') !== 'C' || !aminoAcid) throw new Error('Selected C-alpha atoms must be canonical ATOM amino-acid residues; modified residues are unsupported.');
+                if (!Number.isSafeInteger(labelSeqId) || labelSeqId < 1 || !Number.isSafeInteger(authSeqId) || position > protein.sequence.length ||
+                    protein.sequence[position - 1] !== aminoAcid) throw new Error('The explicit label-sequence mapping does not match the supplied protein at label position ' + labelSeqId + '.');
+                const authAsymId = alignmentText(field('auth_asym_id'), 'Author chain ID', false, 128);
+                if (['.', '?'].includes(authAsymId)) throw new Error('An explicit author chain ID is required.');
+                const insertionCode = ['.', '?'].includes(field('pdbx_pdb_ins_code')) ? '' : alignmentText(field('pdbx_pdb_ins_code'), 'Insertion code', false, 4);
+                const authorKey = JSON.stringify([authSeqId, insertionCode]);
+                if (positions.has(labelSeqId) || authorPositions.has(authorKey)) throw new Error('Duplicate or ambiguous C-alpha residue identity.');
+                positions.add(labelSeqId); authorPositions.add(authorKey); authors.add(authAsymId);
+                coordinates.push({ labelSeqId, authSeqId, insertionCode, aminoAcid,
+                  x: cifNumber(field('cartn_x'), 'x coordinate'), y: cifNumber(field('cartn_y'), 'y coordinate'), z: cifNumber(field('cartn_z'), 'z coordinate') });
+                if (coordinates.length > PROTEIN_COORDINATE_LIMITS.observedResidues) throw new Error('Selected chain exceeds 4,096 C-alpha residues.');
+              }
+            }
+          }
+        }
+        row = [];
+      }
+      if (row.length || !rowCount) throw new Error('Incomplete or empty mmCIF loop.');
+      continue;
+    }
+    if (keyword.startsWith('_')) {
+      if (keyword.startsWith('_atom_site.')) throw new Error('Coordinate atoms must be supplied in an atom_site loop.');
+      advance(); if (!token || cifControl(token)) throw new Error('Missing mmCIF data item value.');
+      advance(); continue;
+    }
+    throw new Error('Unsupported mmCIF control or value outside a data item/loop.');
+  }
+  if (!atomLoop || !coordinates.length || authors.size !== 1) throw new Error('No uniquely identified C-alpha chain remains for the selected model, label chain and alternate location.');
+  if (structure.alternateLocation !== null && !requestedAlternateSeen) throw new Error('The requested alternate location is absent from the selected chain/model.');
+  coordinates.sort((a, b) => a.labelSeqId - b.labelSeqId);
+  return { input, chain: { proteinId: protein.id, labelAsymId: structure.labelAsymId, authAsymId: [...authors][0], start: structure.proteinStart, coordinates },
+    selection: { dataBlock, model: structure.model, alternateLocation: structure.alternateLocation,
+      minimumLabelSeqId: coordinates[0].labelSeqId, maximumLabelSeqId: coordinates[coordinates.length - 1].labelSeqId,
+      omittedAlternateAtoms, zeroOccupancyAtoms } };
+}
+
 const AA = /^[ACDEFGHIKLMNPQRSTVWY]+$/;
 const HASH = /^[a-f0-9]{64}$/;
 const MAX_BYTES = 512 * 1024;

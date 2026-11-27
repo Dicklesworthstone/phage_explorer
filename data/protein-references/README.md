@@ -100,8 +100,10 @@ exports the complete input record, and verifies that T4 remains unavailable.
 
 The headless commands accept a validated version-1 reference JSON, including
 complete source proteins, explicit alignment rows and mapped observed C-alpha
-coordinates. They do not fetch external structures, interpret raw PDB/mmCIF,
+coordinates. These reference-input operations do not fetch external structures,
 load the catalog, or check the declared CDS against a currently selected genome.
+The separate local mmCIF preparation workflow below accepts ordinary coordinate
+files without requiring a deposited-complex reference bundle.
 The interactive current-CDS path separately performs the genomic translation
 check through `loadProteinReferenceInputs`.
 
@@ -178,10 +180,142 @@ Focused native verification:
 bun test packages/tui/src/research-protein.test.ts
 ```
 
+## Analyze your own mmCIF coordinates
+
+A standalone coordinate input needs one local mmCIF file, one canonical protein
+FASTA record and an explicit sequence mapping. It requires no receptor, embeddings,
+homolog alignment or publication metadata. This uses a separate
+`phage-explorer-protein-coordinates` version-1 input; the complete-reference
+validator and its source/CDS requirements remain unchanged.
+
+Prepare the input with the installed executable. Every output path must be new:
+
+```sh
+phage-explorer protein-structure prepare local.cif \
+  --sequence protein.faa --chain A --protein-start 1 --model 1 \
+  --source "My supplied structure and protein sequence" \
+  --citation "Notebook or source reference" --output local-input.json
+
+phage-explorer protein-structure inspect local-input.json
+
+phage-explorer protein-structure analyze local-input.json \
+  --cutoff 8 --separation 3 --output local-geometry.json
+
+phage-explorer protein-structure analyze local-input.json \
+  --cutoff 8 --separation 3 --format contacts --output local-contacts.tsv
+
+phage-explorer protein-structure replay local-geometry.json \
+  --format residues --output local-residues.tsv
+
+phage-explorer workflow replay-experiment \
+  --input local-geometry.json --output local-geometry-replayed.json
+```
+
+`prepare` validates the selected C-alpha residues before emitting portable input
+JSON; it does not calculate geometry. `analyze` computes within-chain distances.
+Both native replay commands recompute the saved method. Browser input/experiment
+exports use these same formats, so they can move between native and browser
+workflows. The exact mmCIF text, protein sequence, declared source, chain, model,
+alternate choice, offset and numerical settings are retained in the record.
+
+### Declare the mapping explicitly
+
+`--chain` selects `_atom_site.label_asym_id`, which may differ from the author's
+chain name. `--protein-start N` means **polymer label position 1 corresponds to
+position N of the supplied protein**, with both positions one-based. Every retained
+C-alpha amino acid must match
+`proteinStart + label_seq_id - 1`; a mismatch is an error.
+
+Missing coordinates do not renumber the polymer. For example, with
+`--protein-start 3`, observed label positions 1 and 3 map to protein positions
+3 and 5. Protein position 4 remains without coordinates. Author residue number
+10 with insertion code A stays the label `10A`; it never becomes a sequence
+offset. Only observed residue identities are checked against the supplied protein.
+Matching observed residues cannot independently verify unobserved sequence,
+construct boundaries, accession identity or a genomic CDS mapping.
+
+Model 1 is the default; select another model explicitly with `--model`. If the
+selected chain/model contains positive-occupancy alternate C-alpha locations,
+supply `--alt-location A` (or the actual identifier). The selected conformer and
+atoms without alternate locations are included; other alternatives are counted
+and excluded. Zero-occupancy C-alpha atoms are counted and excluded. Positive
+fractional occupancy is accepted without weighting distances. No average across
+models or alternate conformers is formed.
+
+The narrow input profile accepts a single CIF1 data block containing one
+`_atom_site` loop, wrapped/reordered loop columns, quoted values, comments and
+semicolon text. It requires explicit label/author residue and chain identifiers,
+model, alternate location, insertion code, occupancy and Cartesian coordinates.
+The selected residues must be canonical `ATOM` amino acids with carbon C-alpha
+atoms. Legacy PDB, binary/gzipped CIF, multiple data blocks, ambiguous duplicate
+atoms, unknown/modified residues and nonfinite coordinates are rejected with an
+error. No assembly expansion, sequence alignment, residue interpolation, modified
+residue substitution or automatic chain choice is performed.
+
+These conventions follow the wwPDB
+[mmCIF syntax](https://mmcif.wwpdb.org/docs/tutorials/mechanics/pdbx-mmcif-syntax.html)
+and [coordinate categories](https://mmcif.wwpdb.org/docs/user-guide/resources/coordinate_section.html).
+
+### Results, limits and browser use
+
+Every supplied protein position appears in residue JSON/TSV. Missing geometry is
+unavailable (`null`/empty TSV fields). An observed residue with zero neighbors
+means none of its eligible compared C-alpha pairs met the cutoff. Distances use
+the same Euclidean kernel and inclusive cutoff as the deposited-reference
+workflow. Minimum sequence separation uses polymer positions, including missing
+residues. Each within-chain contact is retained once with both protein positions,
+label/author identifiers, insertion codes and distance. Other chains and models
+are unexamined. Alignment evidence is unavailable for this input.
+
+The method is `supplied-mmcif-protein-geometry`, version 1. Its geometry is
+descriptive; imported coordinates may be predicted or experimental and their
+declared source is not authenticated. It does not estimate binding, host range,
+affinity, docking energy, mutation effects or solvent-accessible area. Use
+`--demo` or the browser's **Synthetic teaching coordinates** checkbox for
+user-declared teaching inputs; this label is retained through replay.
+
+Limits are 4 MiB for raw mmCIF and prepared input JSON, 128 KiB for the single
+protein FASTA, 20,000 protein residues and 4,096 selected C-alpha atoms. The
+prepared JSON includes the escaped raw text, so its limit can be reached before
+the raw-file limit. The existing 20-million-pair, 20,000-contact and 10-MiB
+experiment budgets also apply. Exceeding a budget fails the operation without
+truncating a successful result. Inputs remain local; downloads retain the supplied
+private input bytes.
+
+In **Host Interactions → Protein alignment and structural evidence**, use
+**Analyze your own mmCIF protein coordinates**:
+
+1. Choose **Local mmCIF file** and **Coordinate protein FASTA**, enter the label
+   chain and protein position corresponding to polymer label 1, and choose the
+   model/alternate location when needed.
+2. Enter source attribution and choose **Review local mmCIF mapping**.
+3. Set cutoff and minimum sequence separation, then **Analyze local mmCIF
+   geometry**. Inspect mapped/missing residues and the contact preview.
+4. Export prepared input JSON, experiment JSON, complete residue TSV or complete
+   contact TSV. **Load prepared coordinate input JSON** imports the native
+   preparation output; **Replay local coordinate experiment JSON** recomputes
+   and checks an exported experiment.
+
+The workbench is available without a loaded genome or full reference bundle.
+File parsing and geometry run in owned workers, and changing source/mapping,
+closing the panel, changing view context or cancelling the operation discards
+obsolete replies. Standalone local input never claims a verified current CDS.
+
+Focused verification:
+
+```sh
+bun test packages/core/src/protein-reference.test.ts \
+  packages/core/src/analysis/tail-fiber-structure.test.ts \
+  packages/tui/src/commands/protein-structure.test.ts \
+  packages/web/src/workers/ProteinEvidenceSession.test.ts \
+  packages/web/src/components/overlays/protein-reference.test.tsx
+```
+
 ## Browser and interactive terminal
 
 In the browser, open **Host Interactions** from the command palette. The
-**Protein alignment and structural evidence** workbench offers two input paths:
+**Protein alignment and structural evidence** workbench supports validated
+reference inputs and standalone protein files:
 
 1. For the bundled Lambda reference, choose **Select mapped protein CDS**, then
    **Analyze mapped protein CDS**. The reference loader checks the complete
@@ -192,6 +326,10 @@ In the browser, open **Host Interactions** from the command palette. The
    contact scope, then **Analyze loaded protein reference**. This describes the
    imported reference independently of the genome in the background. The
    existing **Export reference inputs** button emits this same importable format.
+3. **Load aligned protein FASTA** computes observed column diversity from a
+   supplied alignment independently of a reference complex.
+4. **Analyze your own mmCIF protein coordinates** uses the explicit local mapping
+   and native/browser exchange workflow described above.
 
 **Replay protein experiment JSON** recomputes an exported experiment from its
 embedded sources and settings. It retains the embedded protein identity even
