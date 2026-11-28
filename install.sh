@@ -14,6 +14,7 @@
 #
 # Flags:
 #   --version vX.Y.Z  Pin specific version
+#   --revision SHA    Build an exact Git commit from source
 #   --dest DIR        Install directory
 #   --system          Install to /usr/local/bin
 #   --from-source     Skip binary download, build from source
@@ -38,6 +39,7 @@ REPO="${REPO:-phage_explorer}"
 BINARY="${BINARY:-phage-explorer}"
 DEST="${DEST:-$HOME/.local/bin}"
 VERSION="${VERSION:-}"
+SOURCE_REVISION=""
 FROM_SOURCE=0
 DATABASE_MODE=missing
 EASY_MODE=0
@@ -98,6 +100,7 @@ ${BOLD}Usage:${NC}
 
 ${BOLD}Options:${NC}
   --version vX.Y.Z   Pin specific version (default: latest release)
+  --revision SHA     Build a specific 40-character Git commit with its locked dependencies
   --dest DIR         Install directory (default: ~/.local/bin)
   --system           Install to /usr/local/bin (may require sudo)
   --from-source      Skip binary download, build from source
@@ -147,6 +150,12 @@ while [[ $# -gt 0 ]]; do
       VERSION="$2"
       shift 2
       ;;
+    --revision)
+      [[ ${2:-} =~ ^[0-9a-fA-F]{40}$ ]] || die "--revision requires a full 40-character Git commit SHA"
+      SOURCE_REVISION="$(printf '%s' "$2" | tr 'A-F' 'a-f')"
+      FROM_SOURCE=1
+      shift 2
+      ;;
     --dest)
       DEST="$2"
       shift 2
@@ -191,6 +200,10 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -n "$SOURCE_REVISION" && -n "$VERSION" ]]; then
+  die "Choose one install target: --revision or a release version (--version or VERSION)"
+fi
 
 # Every temporary path (lock, sha256.txt, source checkout) lives under TMPDIR;
 # an unset or unusable TMPDIR means /tmp.
@@ -435,7 +448,7 @@ log "Asset: $ASSET_NAME"
 
 log_step 2 "Resolving version..."
 
-if [[ -z "$VERSION" ]]; then
+if [[ -z "$VERSION" && -z "$SOURCE_REVISION" ]]; then
   log "Fetching latest release tag..."
   VERSION=$(curl -fsSL "https://api.github.com/repos/$OWNER/$REPO/releases/latest" \
     | grep -o '"tag_name": *"[^"]*"' \
@@ -452,6 +465,8 @@ fi
 
 if [[ -n "$VERSION" ]]; then
   log_success "Version: $VERSION"
+elif [[ -n "$SOURCE_REVISION" ]]; then
+  log_success "Source commit: $SOURCE_REVISION"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -562,7 +577,7 @@ source_catalog_sha256() {
 select_existing_catalog() {
   local actual
   DATABASE_MODE=keep
-  [[ -n "$VERSION" && $SKIP_CHECKSUMS -eq 0 ]] || return 0
+  [[ -n "${VERSION:-$SOURCE_REVISION}" && $SKIP_CHECKSUMS -eq 0 ]] || return 0
   if [[ $FROM_SOURCE -eq 0 ]]; then EXPECTED_DB="$(release_sha256 phage.db)"; fi
   [[ -n "$EXPECTED_DB" ]] || return 0
   actual="$(sha256_of "$DB_PATH")" || return 0
@@ -571,6 +586,10 @@ select_existing_catalog() {
     DATABASE_MODE=replace
     AUTO_PREVIOUS_SHA="$actual"
     log "Updating the unmodified release catalog at $DB_PATH to the catalog shipped with $VERSION."
+    return 0
+  fi
+  if [[ -n "$SOURCE_REVISION" ]]; then
+    log_warn "The kept catalog at $DB_PATH differs from commit $SOURCE_REVISION. To replace it, re-run with --revision $SOURCE_REVISION --with-database."
     return 0
   fi
   log_warn "The kept catalog at $DB_PATH differs from the catalog shipped with $VERSION."
@@ -604,9 +623,15 @@ if [[ $FROM_SOURCE -eq 1 ]]; then
   TMP_DIR="$(mktemp -d)" || die "Cannot create a temporary directory; $NOT_CHANGED"
 
   log "Cloning repository..."
-  # A pinned or resolved version builds exactly that tag; only an unresolved
-  # version builds the default branch.
-  if [[ -n "$VERSION" ]]; then
+  # Fetch a commit by object ID. Named releases use their tag, and only an
+  # unresolved latest release uses the default branch.
+  if [[ -n "$SOURCE_REVISION" ]]; then
+    git -C "$TMP_DIR" init -q \
+      && git -C "$TMP_DIR" fetch --depth 1 --no-tags "https://github.com/$OWNER/$REPO.git" "$SOURCE_REVISION" \
+      && git -C "$TMP_DIR" checkout -q --detach FETCH_HEAD \
+      && [[ "$(git -C "$TMP_DIR" rev-parse HEAD)" == "$SOURCE_REVISION" ]] \
+      || die "Cannot check out requested commit $SOURCE_REVISION of $OWNER/$REPO; $NOT_CHANGED"
+  elif [[ -n "$VERSION" ]]; then
     git clone --depth 1 --branch "$VERSION" "https://github.com/$OWNER/$REPO.git" "$TMP_DIR" \
       || die "Cannot clone tag $VERSION of $OWNER/$REPO; $NOT_CHANGED"
   else
@@ -617,9 +642,14 @@ if [[ $FROM_SOURCE -eq 1 ]]; then
   log "Installing dependencies and building..."
   # Chained explicitly: `set -e` does not apply inside `( ... ) || die`.
   (
-    cd "$TMP_DIR" \
-      && { bun install --frozen-lockfile 2>/dev/null || bun install; } \
-      && bun run build
+    cd "$TMP_DIR" || exit 1
+    if [[ -n "$SOURCE_REVISION" ]]; then
+      [[ -f bun.lock || -f bun.lockb ]] || die "The requested commit has no Bun lockfile; $NOT_CHANGED"
+      bun install --frozen-lockfile || exit 1
+    else
+      bun install --frozen-lockfile 2>/dev/null || bun install || exit 1
+    fi
+    bun run build
   ) || die "Build failed; $NOT_CHANGED"
 
   [[ -f "$TMP_DIR/dist/phage-explorer" ]] || die "Build failed: binary not found; $NOT_CHANGED"

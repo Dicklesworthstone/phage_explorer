@@ -341,6 +341,76 @@ exec "${Bun.which('mv')}" "$@"
     expect(leftovers(run)).toEqual([]);
   });
 
+  test('installs an exact non-tip commit and its catalog through Git without consulting releases', () => {
+    const prepared = prepareInstall({ binary: GOOD_BINARY, db: GOOD_DB }, { version: '', databaseMode: 'default' });
+    const git = Bun.which('git')!;
+    const repo = join(prepared.tmp, 'history');
+    const data = join(repo, 'packages/web/public');
+    mkdirSync(data, { recursive: true });
+    const runGit = (...args: string[]) => {
+      const result = Bun.spawnSync([git, '-C', repo, ...args], { env: { ...process.env, HOME: prepared.home } });
+      if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+      return result.stdout.toString().trim();
+    };
+    runGit('init', '-q');
+    runGit('config', 'user.name', 'Installer fixture');
+    runGit('config', 'user.email', 'installer@example.invalid');
+    runGit('config', '--global', `url.file://${repo}.insteadOf`, 'https://github.com/Dicklesworthstone/phage_explorer.git');
+    writeFileSync(join(data, 'phage.db'), GOOD_DB);
+    writeFileSync(join(data, 'phage.db.manifest.json'), JSON.stringify({ sha256: sha256(GOOD_DB) }));
+    writeFileSync(join(repo, 'program'), GOOD_BINARY);
+    mkdirSync(join(repo, 'fixture-lib'));
+    writeFileSync(join(repo, 'fixture-lib/package.json'), JSON.stringify({ name: 'fixture-lib', version: '1.0.0' }));
+    writeFileSync(join(repo, 'package.json'), JSON.stringify({
+      name: 'revision-install-fixture', dependencies: { 'fixture-lib': 'file:./fixture-lib' },
+      scripts: { build: 'mkdir -p dist && cp program dist/phage-explorer' },
+    }));
+    const lock = Bun.spawnSync([process.execPath, 'install', '--lockfile-only'], { cwd: repo });
+    expect(lock.exitCode).toBe(0);
+    runGit('add', '.');
+    runGit('commit', '-qm', 'Pinned build');
+    const requested = runGit('rev-parse', 'HEAD');
+    writeFileSync(join(repo, 'program'), OLD_BINARY);
+    writeFileSync(join(data, 'phage.db'), OLD_DB);
+    runGit('commit', '-qam', 'Different branch tip');
+    runGit('rm', '--cached', 'bun.lock');
+    runGit('commit', '-qm', 'Missing dependency lock');
+    const unlocked = runGit('rev-parse', 'HEAD');
+    symlinkSync(git, join(prepared.env.PATH, 'git'));
+    symlinkSync(process.execPath, join(prepared.env.PATH, 'bun'));
+    writeFileSync(join(prepared.env.PATH, 'curl'), '#!/bin/sh\n: > "$TMPDIR/contacted-release"\nexit 1\n', { mode: 0o755 });
+    prepared.argv.push('--revision', requested.toUpperCase());
+    const run = runPrepared(prepared);
+    expect(run.code).toBe(0);
+    expect(installedBinary(run)).toEqual(Buffer.from(GOOD_BINARY));
+    expect(installedDb(run)).toEqual(Buffer.from(GOOD_DB));
+    expect(existsSync(join(prepared.tmp, 'contacted-release'))).toBe(false);
+
+    prepared.argv[prepared.argv.length - 1] = unlocked;
+    const withoutLock = runPrepared(prepared);
+    expect(withoutLock.code).not.toBe(0);
+    expect(withoutLock.stderr).toContain('no Bun lockfile');
+    expect(installedBinary(withoutLock)).toEqual(Buffer.from(GOOD_BINARY));
+
+    prepared.argv[prepared.argv.length - 1] = 'f'.repeat(40);
+    const missing = runPrepared(prepared);
+    expect(missing.code).not.toBe(0);
+    expect(missing.stderr).toContain('Cannot check out requested commit');
+    expect(installedBinary(missing)).toEqual(Buffer.from(GOOD_BINARY));
+    expect(installedDb(missing)).toEqual(Buffer.from(GOOD_DB));
+  });
+
+  test.each([
+    { revision: 'main', version: '', message: 'full 40-character' },
+    { revision: 'a'.repeat(40), version: VERSION, message: 'Choose one install target' },
+  ])('rejects an ambiguous or invalid revision before changing an installation', ({ revision, version, message }) => {
+    const run = runInstaller({ binary: GOOD_BINARY, db: GOOD_DB },
+      { previous: true, version, args: ['--revision', revision] });
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain(message);
+    expectUnchanged(run);
+  });
+
   test('a corrupt source catalog aborts before replacing either installed file', () => {
     const prepared = prepareReleasedCatalog({ binary: GOOD_BINARY, db: GOOD_DB }, { args: ['--from-source'] });
     provideTaggedSource(prepared, { sha256: sha256(flipped(GOOD_DB)) });
@@ -903,7 +973,7 @@ describe.skipIf(!supported || process.env.PHAGE_INSTALLER_LIVE !== '1')('install
   test.each(['fresh', 'upgrade'] as const)('verifies the published binary and catalog on %s install', async (mode) => {
     const sums = await (
       await fetch(`https://github.com/Dicklesworthstone/phage_explorer/releases/download/${liveVersion}/sha256.txt`, {
-        headers: { 'User-Agent': 'OpenAI File Downloader, XaiImageApiFetch/1.0' },
+        headers: { 'User-Agent': 'phage-explorer-installer-test (+https://github.com/Dicklesworthstone/phage_explorer)' },
       })
     ).text();
     const published = new Map(

@@ -425,6 +425,10 @@ curl -fsSL .../install.sh | bash -s -- --version v1.0.0
 # Build from source instead of downloading binary
 curl -fsSL .../install.sh | bash -s -- --from-source
 
+# Build a specific commit from main (requires git and bun)
+commit="$(git ls-remote https://github.com/Dicklesworthstone/phage_explorer.git refs/heads/main | cut -f1)"
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/phage_explorer/$commit/install.sh" | bash -s -- --revision "$commit"
+
 # Replace an existing catalog with the release database
 curl -fsSL .../install.sh | bash -s -- --with-database
 
@@ -434,6 +438,11 @@ curl -fsSL .../install.sh | bash -s -- --without-database
 # Auto-add to PATH
 curl -fsSL .../install.sh | bash -s -- --easy-mode
 ```
+
+Save the full commit SHA to repeat a source install. With `--revision`, both the
+build and the catalog come from that commit. The installer uses its frozen Bun
+lockfile and verifies the catalog against its manifest. An existing catalog is
+kept unless you also pass `--with-database`.
 
 A fresh install includes the catalog. On upgrade, the installer also replaces an
 unmodified catalog from a known older release when it can verify the new bytes.
