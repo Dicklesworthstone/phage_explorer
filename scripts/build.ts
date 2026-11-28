@@ -78,7 +78,7 @@ export async function buildExecutable(args: string[] = Bun.argv.slice(2)): Promi
   const target = values.target ? targetMap[values.target] : undefined;
   const outfile = values.target
     ? `dist/phage-explorer-${values.target.replace("mac-", "macos-")}${values.target.includes("windows") ? ".exe" : ""}`
-    : "dist/phage-explorer";
+    : `dist/phage-explorer${process.platform === "win32" ? ".exe" : ""}`;
 
   console.log(`Building${target ? ` for ${target}` : ""}...`);
 

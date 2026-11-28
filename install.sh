@@ -652,9 +652,13 @@ if [[ $FROM_SOURCE -eq 1 ]]; then
     bun run build
   ) || die "Build failed; $NOT_CHANGED"
 
-  [[ -f "$TMP_DIR/dist/phage-explorer" ]] || die "Build failed: binary not found; $NOT_CHANGED"
+  built_binary="$TMP_DIR/dist/phage-explorer"
+  if [[ "$OS" == windows && -f "$built_binary.exe" ]]; then
+    built_binary="$built_binary.exe"
+  fi
+  [[ -f "$built_binary" ]] || die "Build failed: binary not found; $NOT_CHANGED"
   STAGED_BIN="$(new_staging_file "$DEST" "$BINARY")"
-  if ! { cp "$TMP_DIR/dist/phage-explorer" "$STAGED_BIN" && chmod 755 "$STAGED_BIN"; }; then
+  if ! { cp "$built_binary" "$STAGED_BIN" && chmod 755 "$STAGED_BIN"; }; then
     die "Cannot stage the built binary; $NOT_CHANGED"
   fi
   log_success "Binary built from source"

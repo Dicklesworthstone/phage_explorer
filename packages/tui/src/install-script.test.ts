@@ -229,7 +229,7 @@ function runPrepared(prepared: ReturnType<typeof prepareInstall>): Run {
 }
 
 /** Model a tagged checkout and compilation. Use real Bun for manifest parsing. */
-function provideTaggedSource(prepared: ReturnType<typeof prepareInstall>, manifest: unknown) {
+function provideTaggedSource(prepared: ReturnType<typeof prepareInstall>, manifest: unknown, windows = false) {
   const data = join(prepared.tmp, 'checkout/packages/web/public');
   mkdirSync(data, { recursive: true });
   writeFileSync(join(data, 'phage.db'), GOOD_DB);
@@ -238,6 +238,9 @@ function provideTaggedSource(prepared: ReturnType<typeof prepareInstall>, manife
 
   const wrappers = join(prepared.tmp, 'source-tools');
   mkdirSync(wrappers);
+  if (windows) {
+    writeFileSync(join(wrappers, 'uname'), `#!${SHELL}\ncase "$1" in -s) echo MINGW64_NT-10.0 ;; -m) echo x86_64 ;; esac\n`, { mode: 0o755 });
+  }
   writeFileSync(join(wrappers, 'git'), `#!${SHELL}
 [[ "$1" == clone && "$4" == --branch && "$5" == "$VERSION" ]] || exit 1
 cp -R "$TMPDIR/checkout/." "$7"
@@ -245,7 +248,7 @@ cp -R "$TMPDIR/checkout/." "$7"
   writeFileSync(join(wrappers, 'bun'), `#!${SHELL}
 case "$1" in
   install) exit 0 ;;
-  run) [[ "$2" == build ]] && mkdir -p dist && cp "$TMPDIR/built-binary" dist/phage-explorer ;;
+  run) [[ "$2" == build ]] && mkdir -p dist && cp "$TMPDIR/built-binary" dist/phage-explorer${windows ? '.exe' : ''} ;;
   *) exec "${process.execPath}" "$@" ;;
 esac
 `, { mode: 0o755 });
@@ -337,6 +340,17 @@ exec "${Bun.which('mv')}" "$@"
     expect(run.code).toBe(0);
     expect(run.stdout).toContain('Updating the unmodified release catalog');
     expect(installedBinary(run)).toEqual(Buffer.from(GOOD_BINARY));
+    expect(installedDb(run)).toEqual(Buffer.from(GOOD_DB));
+    expect(leftovers(run)).toEqual([]);
+  });
+
+  test('stages the native .exe and verified catalog on Windows after a missing release binary', () => {
+    const prepared = prepareInstall({ binary: GOOD_BINARY, db: GOOD_DB });
+    provideTaggedSource(prepared, { sha256: sha256(GOOD_DB) }, true);
+    const run = runPrepared(prepared);
+    expect(run.code).toBe(0);
+    expect(run.stderr).toContain('falling back to source build');
+    expect(readFileSync(join(run.dest, 'phage-explorer.exe'))).toEqual(Buffer.from(GOOD_BINARY));
     expect(installedDb(run)).toEqual(Buffer.from(GOOD_DB));
     expect(leftovers(run)).toEqual([]);
   });
@@ -961,8 +975,12 @@ describe.skipIf(!supported || process.env.PHAGE_INSTALLER_LIVE !== '1')('install
     const home = join(root, 'home');
     const dest = join(root, 'bin');
     mkdirSync(home, { recursive: true });
+    // Retain the network path and certificate trust used by the checksum fetch.
+    // HOME, install paths and release selection remain isolated for each run.
+    const transport = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+      /^(https?_proxy|all_proxy|no_proxy|ssl_cert_file|ssl_cert_dir|curl_ca_bundle)$/i.test(key)));
     const result = Bun.spawnSync([SHELL, INSTALLER, '--dest', dest, '--version', version, ...extra], {
-      env: { PATH: '/usr/bin:/bin', HOME: home, TMPDIR: root },
+      env: { ...transport, PATH: '/usr/bin:/bin', HOME: home, TMPDIR: root },
       stdin: 'ignore',
       stdout: 'pipe',
       stderr: 'pipe',
@@ -985,13 +1003,13 @@ describe.skipIf(!supported || process.env.PHAGE_INSTALLER_LIVE !== '1')('install
     let previousRoot: string | undefined;
     if (mode === 'upgrade') {
       const previous = runLive(['--with-database'], 'v1.4.1');
-      expect(previous.result.exitCode).toBe(0);
+      expect(previous.result.exitCode, previous.result.stderr.toString()).toBe(0);
       expect(sha256(readFileSync(join(previous.home, '.phage-explorer', 'phage.db')))).toBe(V141_DB_SHA);
       previousRoot = previous.root;
     }
     const { result, home, dest } = runLive(mode === 'fresh' ? ['--with-database'] : [], liveVersion, previousRoot);
     expect(result.stderr.toString()).not.toContain('Another installation');
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
     expect(sha256(readFileSync(join(dest, 'phage-explorer')))).toBe(published.get(ASSET)!);
     expect(sha256(readFileSync(join(home, '.phage-explorer', 'phage.db')))).toBe(published.get('phage.db')!);
     const version = Bun.spawnSync([join(dest, 'phage-explorer'), '--version'], {
