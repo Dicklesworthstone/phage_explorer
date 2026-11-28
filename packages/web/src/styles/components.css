@@ -1648,6 +1648,41 @@ textarea:focus-visible,
   font-size: var(--text-xs);
 }
 
+.sequence-text-reader {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.sequence-text-reader > div:not([hidden]) {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  min-width: 0;
+}
+
+.sequence-text-reader textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  padding: var(--space-2);
+  font-family: var(--font-mono);
+  color: var(--color-text);
+  background: var(--color-background-alt);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-sm);
+}
+
+.sequence-text-reader__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.sequence-text-reader__actions [aria-disabled="true"] {
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
 /* Canvas background prevents black flash during scroll */
 .sequence-grid-canvas {
   background-color: var(--color-background);

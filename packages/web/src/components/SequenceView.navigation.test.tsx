@@ -226,3 +226,63 @@ describe('mounted comparison viewport ownership (native host, real 2D renderer)'
     expect(usePhageStore.getState().scrollPosition).toBeGreaterThan(7500);
   });
 });
+
+describe('sequence text reader', () => {
+  const button = (label: string) => find(node => node.type === 'button' && node.textContent === label);
+  const read = () => container.all().filter(node => node.type === 'textarea').map(node => node.props.value);
+  const status = () => find(node => node.props.role === 'status' && node.textContent.includes('indices')).textContent;
+  const click = (label: string) => settle(() => invoke(button(label), 'onClick'));
+
+  it('pages and jumps through bounded exact text, follows the grid again and leaves explorer position intact', async () => {
+    const sequence = 'ACGT'.repeat(32);
+    await mount(<SequenceView sequence={sequence} height={320} />);
+    expect(read()).toEqual([]);
+    await click('Read sequence as text');
+    expect(read()).toEqual([sequence.slice(0, 60)]);
+    await click('Next passage');
+    expect(status()).toContain('DNA indices 60 through 119');
+    await click('Next passage');
+    expect(read()).toEqual([sequence.slice(120)]);
+    expect(button('Next passage').props['aria-disabled']).toBe(true);
+    await click('Next passage');
+    expect(read()).toEqual([sequence.slice(120)]);
+    await click('Previous passage');
+    expect(read()).toEqual([sequence.slice(60, 120)]);
+    const index = find(node => node.type === 'input' && node.props.type === 'number');
+    const submit = button('Read from index').parent!;
+    await settle(() => invoke(index, 'onChange', { target: { value: '127' } }));
+    await settle(() => invoke(submit, 'onSubmit', { preventDefault: noop }));
+    expect(read()).toEqual(['T']);
+    expect(status()).toContain('127 through 127');
+    await settle(() => invoke(index, 'onChange', { target: { value: '-1' } }));
+    await settle(() => invoke(submit, 'onSubmit', { preventDefault: noop }));
+    expect(read()).toEqual(['T']);
+    expect(usePhageStore.getState().scrollPosition).toBe(0);
+    await click('Follow grid position');
+    expect(read()).toEqual([sequence.slice(0, 60)]);
+    await click('Read sequence as text');
+    expect(read()).toEqual([]);
+  });
+
+  it('uses the same frame and left-to-right display order in amino acid and dual mode, including partial edges', async () => {
+    await mount(<SequenceView sequence="ATGAAATAGC" height={320} />);
+    await click('Read sequence as text');
+    await settle(() => usePhageStore.setState({ viewMode: 'aa', readingFrame: 0 }));
+    expect(read()).toEqual(['MK*']);
+    await settle(() => usePhageStore.setState({ viewMode: 'aa', readingFrame: -1 }));
+    // Reverse complement GCT ATT TCA T translates AIS; the viewport reads left to right.
+    expect(read()).toEqual(['SIA']);
+    await settle(() => usePhageStore.setState({ viewMode: 'dual' }));
+    expect(read()).toEqual(['ATGAAATAGC', 'SIA']);
+    const index = find(node => node.type === 'input' && node.props.type === 'number');
+    const submit = button('Read from index').parent!;
+    await settle(() => invoke(index, 'onChange', { target: { value: '9' } }));
+    await settle(() => invoke(submit, 'onSubmit', { preventDefault: noop }));
+    expect(read()).toEqual(['C', 'A']);
+    await settle(() => usePhageStore.setState({ readingFrame: 0 }));
+    await settle(() => invoke(index, 'onChange', { target: { value: '9' } }));
+    await settle(() => invoke(submit, 'onSubmit', { preventDefault: noop }));
+    expect(read()).toEqual(['C']);
+    expect(container.textContent).toContain('No complete codon overlaps');
+  });
+});

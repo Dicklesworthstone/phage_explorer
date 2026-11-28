@@ -300,6 +300,14 @@ export class KeyboardManager {
    */
   private handleKeyDown(event: globalThis.KeyboardEvent): void {
     if (!this.state.isActive) return;
+    // A focused sequence-mode radio uses arrows to move within its own group.
+    // Let the target receive the key before global next/previous-genome actions.
+    if (event.key.startsWith('Arrow') && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey &&
+      typeof Element !== 'undefined' && event.target instanceof Element &&
+      event.target.closest?.('[data-arrow-navigation]')) {
+      if (this.state.pendingSequence !== null) this.clearSequence();
+      return;
+    }
     // The native picker owns its keyboard until the exit animation finishes.
     // This check runs before the manager's capture-phase shortcut dispatch.
     if (typeof Element !== 'undefined' && event.target instanceof Element &&

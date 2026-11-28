@@ -95,16 +95,14 @@ function ViewModeToggle({ value, onChange, compactLabels }: ViewModeToggleProps)
 
   const handleKey = useCallback(
     (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
-      if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      const direction = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1
+        : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 0;
+      if (direction) {
         event.preventDefault();
-        const next = VIEW_MODE_OPTIONS[(index + 1) % VIEW_MODE_OPTIONS.length];
-        onChange(next.id);
-        return;
-      }
-      if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
-        event.preventDefault();
-        const prev = VIEW_MODE_OPTIONS[(index - 1 + VIEW_MODE_OPTIONS.length) % VIEW_MODE_OPTIONS.length];
-        onChange(prev.id);
+        const next = (index + direction + VIEW_MODE_OPTIONS.length) % VIEW_MODE_OPTIONS.length;
+        onChange(VIEW_MODE_OPTIONS[next].id);
+        segmentRefs.current[next]?.focus();
         return;
       }
       if (event.key === ' ' || event.key === 'Enter') {
@@ -120,6 +118,7 @@ function ViewModeToggle({ value, onChange, compactLabels }: ViewModeToggleProps)
       ref={containerRef}
       className={`view-mode-toggle ${indicatorStyle ? 'has-indicator' : ''}`}
       role="radiogroup"
+      data-arrow-navigation
       aria-label="Sequence view mode"
       style={indicatorStyle ? {
         '--indicator-x': `${indicatorStyle.x}px`,
@@ -177,6 +176,79 @@ interface SequenceViewProps {
   height?: number | string;
   /** Expose navigation helpers */
   onControlsReady?: (controls: { jumpToDiff: (direction: 'next' | 'prev') => number | null }) => void;
+}
+
+const TEXT_PASSAGE_LENGTH = 60;
+
+function SequenceTextReader({ displaySequence, aminoSequence, viewMode, readingFrame, frameLabel, gridStart }: {
+  displaySequence: string; aminoSequence: string | null; viewMode: ViewMode;
+  readingFrame: ReadingFrame; frameLabel: string; gridStart: number;
+}): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const [index, setIndex] = useState<number | null>(null);
+  const [jump, setJump] = useState('');
+  const panelId = useId();
+  const rangeId = useId();
+  useEffect(() => {
+    setIndex(null);
+    setJump('');
+  }, [displaySequence, viewMode, readingFrame]);
+
+  const length = displaySequence.length;
+  const start = Math.max(0, Math.min(length - 1, index ?? gridStart));
+  const end = Math.min(length, start + TEXT_PASSAGE_LENGTH);
+  const aminoOnly = viewMode === 'aa';
+  const units = aminoOnly ? 'Amino acid' : 'DNA';
+  let dualText = '';
+  if (open && viewMode === 'dual' && aminoSequence) {
+    // Select the already translated cells overlapping this DNA passage. In a
+    // negative frame the canvas places the last translated residue on the left.
+    const reverse = readingFrame < 0;
+    const offset = reverse ? (length - (Math.abs(readingFrame) - 1)) % 3 : readingFrame;
+    const count = aminoSequence.length;
+    const first = Math.min(count, Math.max(0, Math.floor((start - offset) / 3)));
+    const afterLast = Math.min(count, Math.max(0, Math.ceil((end - offset) / 3)));
+    dualText = reverse
+      ? aminoSequence.slice(count - afterLast, count - first).split('').reverse().join('')
+      : aminoSequence.slice(first, afterLast);
+  }
+
+  return <div className="sequence-text-reader">
+    <button type="button" className="btn compact" aria-expanded={open} aria-controls={panelId}
+      onClick={() => { setOpen(!open); setIndex(null); setJump(''); }}>Read sequence as text</button>
+    <div id={panelId} hidden={!open}>
+      {open && (length === 0 ? <p role="status">No {aminoOnly ? 'amino acids' : 'sequence characters'} to display.</p> : <>
+        <p id={rangeId} role="status" aria-atomic="true">
+          {units} indices {start} through {end - 1} of {length.toLocaleString()} {aminoOnly ? 'residues' : 'bases'}
+          {viewMode !== 'dna' && `, frame ${frameLabel}`}. Indices start at 0.
+        </p>
+        <label>{aminoOnly ? 'Amino acid sequence' : 'DNA sequence'}
+          <textarea readOnly spellCheck={false} rows={2} aria-describedby={rangeId}
+            value={displaySequence.slice(start, end)} />
+        </label>
+        {viewMode === 'dual' && (dualText ? <label>Amino acids overlapping this passage
+          <textarea readOnly spellCheck={false} rows={1} aria-describedby={rangeId} value={dualText} />
+        </label> : <p>No complete codon overlaps this passage in frame {frameLabel}.</p>)}
+        <div className="sequence-text-reader__actions">
+          <button type="button" className="btn compact" aria-disabled={start === 0}
+            onClick={() => { if (start > 0) setIndex(Math.max(0, start - TEXT_PASSAGE_LENGTH)); }}>Previous passage</button>
+          <button type="button" className="btn compact" aria-disabled={end >= length}
+            onClick={() => { if (end < length) setIndex(end); }}>Next passage</button>
+          <button type="button" className="btn compact" aria-disabled={index === null}
+            onClick={() => setIndex(null)}>Follow grid position</button>
+        </div>
+        <form className="sequence-view__jump-form" onSubmit={event => {
+          event.preventDefault();
+          const target = Number(jump);
+          if (jump.trim() && Number.isSafeInteger(target) && target >= 0 && target < length) setIndex(target);
+        }}>
+          <label>Start index <input className="sequence-view__jump-input" type="number" min={0} max={length - 1}
+            step={1} required value={jump} onChange={event => setJump(event.target.value)} /></label>
+          <button type="submit" className="btn compact">Read from index</button>
+        </form>
+      </>)}
+    </div>
+  </div>;
 }
 
 /**
@@ -364,6 +436,8 @@ function SequenceViewBase({
   // Sequence grid hook with zoom support
   const {
     canvasRef,
+    displaySequence,
+    aminoSequence,
     visibleRange,
 	    handleWheelDelta,
 	    orientation,
@@ -810,7 +884,7 @@ function SequenceViewBase({
       aria-describedby={descriptionId}
     >
       <p id={descriptionId} className="sr-only">
-        Canvas-based sequence viewer. Use the controls to change view mode, reading frame, and zoom. Use the position bar or jump input to navigate.
+        Use Read sequence as text to read and page through the letters. Use the controls to change view mode, reading frame, and zoom. Use the position bar or jump input to navigate.
         Use scroll or touch gestures to navigate the sequence.
       </p>
       {/* Header */}
@@ -883,6 +957,8 @@ function SequenceViewBase({
       </div>
 
       {/* Canvas */}
+      <SequenceTextReader displaySequence={displaySequence} aminoSequence={aminoSequence}
+        viewMode={viewMode} readingFrame={readingFrame} frameLabel={frameLabel} gridStart={visibleStart} />
       <div ref={canvasWrapperRef} style={{ flex: 1, minHeight: resolvedHeight, position: 'relative' }}>
         <canvas
           key={rendererBackend}

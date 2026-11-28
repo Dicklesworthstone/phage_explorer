@@ -77,6 +77,9 @@ function getMobileAwareZoom(): number {
 }
 
 export interface UseSequenceGridResult {
+  /** The same letter streams passed to the canvas, in its display order. */
+  displaySequence: string;
+  aminoSequence: string | null;
   /** Ref to attach to canvas element */
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   /** Current visible range */
@@ -965,6 +968,8 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
 
   return {
     canvasRef,
+    displaySequence,
+    aminoSequence,
     visibleRange,
     handleWheelDelta,
     orientation,

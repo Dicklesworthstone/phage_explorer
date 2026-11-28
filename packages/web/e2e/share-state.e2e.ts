@@ -43,6 +43,45 @@ async function expectT4AminoAcidState(page: Page): Promise<void> {
 }
 
 test.describe('Shareable explorer state', () => {
+  test('reads bounded sequence passages and changes view by keyboard without switching genomes', async ({ page }, testInfo) => {
+    const { finalize } = setupTestHarness(page, testInfo);
+    try {
+      await page.goto('/?phage=lambda&view=dna&pos=0&model=0');
+      await dismissWelcomeIfPresent(page);
+      const viewer = page.getByRole('region', { name: 'Sequence viewer' });
+      const toggle = viewer.getByRole('button', { name: 'Read sequence as text' });
+      await toggle.focus();
+      await toggle.press('Enter');
+      const bases = viewer.getByRole('textbox', { name: 'DNA sequence', exact: true });
+      await expect(bases).toHaveValue(/^GGGCGGCG.{52}$/);
+      const next = viewer.getByRole('button', { name: 'Next passage' });
+      await next.focus();
+      await next.press('Enter');
+      await expect(bases).toHaveValue(/^TTCTTCTT.{52}$/);
+      await expect(viewer.getByRole('status')).toContainText('60 through 119');
+      const index = viewer.getByRole('spinbutton', { name: 'Start index' });
+      await index.fill('48501');
+      await index.press('Enter');
+      await expect(bases).toHaveValue(/^.$/);
+      await expect(next).toBeDisabled();
+
+      const dna = viewer.getByRole('radio', { name: 'DNA view' });
+      const dual = viewer.getByRole('radio', { name: 'Dual view' });
+      const amino = viewer.getByRole('radio', { name: 'Amino Acids view' });
+      await dna.focus();
+      await dna.press('ArrowDown');
+      await expect(dual).toBeFocused();
+      await expect(dual).toBeChecked();
+      await dual.press('ArrowRight');
+      await expect(amino).toBeFocused();
+      await expect(amino).toBeChecked();
+      await expect(viewer.getByRole('textbox', { name: 'Amino acid sequence' })).toHaveValue(/^.{60}$/);
+      await expect.poll(() => queryParam(page, 'phage')).toBe('lambda');
+    } finally {
+      await finalize();
+    }
+  });
+
   test('restores deep links and phage-level browser history', async ({ page }, testInfo) => {
     const { finalize, consoleErrors, pageErrors } = setupTestHarness(page, testInfo);
 
