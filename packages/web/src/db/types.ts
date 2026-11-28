@@ -173,7 +173,7 @@ export interface DatabaseLoadProgress {
   /** Background updates never make the currently open repository unusable. */
   updateStatus?: 'pending' | 'ready' | 'failed';
   /** Persistence is separate from availability of the verified open database. */
-  cacheStatus?: 'saving' | 'saved' | 'unavailable';
+  cacheStatus?: 'saving' | 'saved' | 'saved-selection' | 'unavailable';
 }
 
 /**

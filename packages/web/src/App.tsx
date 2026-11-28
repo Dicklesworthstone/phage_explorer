@@ -1018,6 +1018,7 @@ export default function App(): React.ReactElement {
         {repository && progress?.cacheStatus && (
           <p className="text-dim" role="status" aria-label="Offline database status">
             {progress.cacheStatus === 'saving' ? 'Saving database for offline use…'
+              : progress.cacheStatus === 'saved-selection' ? 'Using the catalog for your saved offline selection.'
               : progress.cacheStatus === 'saved' ? 'Database available offline'
                 : 'Database loaded. Offline storage is unavailable.'}
           </p>

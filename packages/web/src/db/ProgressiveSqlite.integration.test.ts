@@ -75,10 +75,11 @@ class MemoryCache implements ArtifactCache {
   async delete(key: string): Promise<boolean> { return this.entries.delete(key); }
   async keys(): Promise<Request[]> { return [...this.entries.keys()].map(key => new Request(key)); }
 }
-async function publish() {
+async function publish(edit?: (source: DatasetSqlite) => void) {
   const source = fixture();
   const artifacts = new Map<string, Uint8Array>();
   try {
+    edit?.(source);
     const monolithic = new Uint8Array(source.serialize());
     const manifest = await publishProgressiveDataset({ source, createDatabase: database,
       writeArtifact: async (item: DataArtifact, bytes: Uint8Array) => { artifacts.set(dataArtifactUrl(base, item), new Uint8Array(bytes)); },
@@ -95,6 +96,51 @@ async function sqlite() {
 }
 
 describe('native publication to browser SQLite interoperability', () => {
+  test('offline startup restores the selected publication when a newer catalog reuses its row IDs', async () => {
+    const first = await publish();
+    const second = await publish(source => {
+      source.exec("UPDATE phages SET name='New record' WHERE id=2; UPDATE genes SET name='replacement' WHERE phage_id=2");
+    });
+    const manifests = new MemoryCache(), reserved = new MemoryCache(), artifacts = new MemoryCache();
+    const openRepository = await sqlite();
+    let publication = first, offline = false;
+    const requests: string[] = [];
+    const load = () => new ProgressiveDatabaseLoader({ databaseUrl: base.replace('.manifest.json', '') }, {
+      openManifestCache: async () => manifests, openReservedManifestCache: async () => reserved,
+      openArtifactCache: async () => artifacts, sqlite: async () => openRepository, acceptVersion: () => {},
+      fetch: async input => {
+        const url = String(input); requests.push(url);
+        if (offline) throw new Error('offline');
+        if (url === base) return Response.json(publication.manifest);
+        const bytes = publication.artifacts.get(url);
+        return bytes ? new Response(new Uint8Array(bytes).buffer) : new Response(null, { status: 404 });
+      },
+    });
+    const chosen = { genomeIds: [2], atlasModels: [] };
+    const original = load();
+    try {
+      const repo = await original.load();
+      assert.equal((await repo.getOfflineDataset!()!.prepare(chosen)).ready, true);
+    } finally { await original.close(); }
+    publication = second;
+    const updated = load();
+    try {
+      const repo = await updated.load();
+      assert.equal((await repo.getPhageById(2))?.name, 'New record');
+      assert.equal((await repo.getGenes(2))[0].name, 'replacement');
+    } finally { await updated.close(); }
+    offline = true;
+    const count = requests.length, restored = load();
+    try {
+      const repo = await restored.load(), api = repo.getOfflineDataset!()!;
+      assert.equal(api.describe().contentVersion, first.manifest.contentVersion);
+      assert.equal((await api.inspect(chosen)).ready, true);
+      assert.equal((await repo.getPhageById(2))?.name, 'Phage 2 — synthetic');
+      assert.equal((await repo.getGenes(2))[0].name, null);
+      assert.deepEqual(requests.slice(count), [base]);
+      assert.equal((await (await manifests.match(base))!.json()).contentVersion, second.manifest.contentVersion);
+    } finally { await restored.close(); }
+  });
   test('preserves full records, qualifiers, models, annotations, vectors and chunk boundaries', async () => {
     const published = await publish(); const openRepository = await sqlite();
     const requests: string[] = []; const cache = new MemoryCache();

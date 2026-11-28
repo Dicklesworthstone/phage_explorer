@@ -99,6 +99,18 @@ async function parseSelection(response: Response, key: string): Promise<OfflineA
     artifacts: uniqueArtifacts(value.manifestUrl, value.artifacts) };
 }
 
+export async function readOfflineSelection(cache: ArtifactCache, manifestUrl: string): Promise<OfflineArtifactSelection | null> {
+  const key = selectionKey(manifestUrl);
+  const response = await cache.match(key);
+  return response ? parseSelection(response, key) : null;
+}
+
+export async function openArtifactCache(): Promise<ArtifactCache | undefined> {
+  // This shared module also type-checks in the root configuration without the DOM lib.
+  const storage = (globalThis as { caches?: { open(name: string): Promise<ArtifactCache> } }).caches;
+  return storage?.open(PROGRESSIVE_ASSET_CACHE);
+}
+
 /** Count decoded bytes while streaming: a missing or forged Content-Length is not a budget bypass. */
 export async function readBoundedResponse(response: Response, maximum: number, signal?: AbortSignal): Promise<Uint8Array> {
   if (!response.ok) throw new Error(`Dataset request failed: HTTP ${response.status}.`);
@@ -148,13 +160,7 @@ export class VerifiedArtifactStore {
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.budget = options.cacheBudget ?? PROGRESSIVE_LIMITS.cacheBytes;
     if (!Number.isSafeInteger(this.budget) || this.budget < 0) throw new Error('Invalid artifact cache budget.');
-    this.cachePromise = Promise.resolve().then(options.openCache ?? (async () => {
-      // Read the Cache Storage global through globalThis: the root project
-      // type-checks this module without the DOM lib, where `caches` is undeclared.
-      const storage = (globalThis as { caches?: { open(name: string): Promise<ArtifactCache> } }).caches;
-      if (storage === undefined) return undefined;
-      return storage.open(PROGRESSIVE_ASSET_CACHE);
-    })).then(cache => {
+    this.cachePromise = Promise.resolve().then(options.openCache ?? openArtifactCache).then(cache => {
       if (!cache) this.unavailable(new Error('Offline artifact storage is unavailable.'));
       return cache;
     }).catch(error => { this.unavailable(error); return undefined; });
@@ -210,9 +216,7 @@ export class VerifiedArtifactStore {
     return result;
   }
   async getOfflineSelection(): Promise<OfflineArtifactSelection | null> {
-    const cache = await this.requireCache(), key = selectionKey(this.options.manifestUrl);
-    const response = await cache.match(key);
-    return response ? parseSelection(response, key) : null;
+    return readOfflineSelection(await this.requireCache(), this.options.manifestUrl);
   }
   async releaseOfflineSelection(signal?: AbortSignal): Promise<void> {
     const combined = signal ? AbortSignal.any([signal, this.controller.signal]) : this.controller.signal;

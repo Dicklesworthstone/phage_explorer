@@ -255,7 +255,8 @@ describe('global projection pages', () => {
 });
 
 function loaderFixture() {
-  const f = fixture(), manifestCache = new MemoryCache(), progress: DatabaseLoadProgress[] = [], versions: string[] = [];
+  const f = fixture(), manifestCache = new MemoryCache(), reservedCache = new MemoryCache();
+  const progress: DatabaseLoadProgress[] = [], versions: string[] = [];
   const manifestRequests: Array<RequestInit | undefined> = [], legacyOptions: Array<{ forceDownload?: boolean } | undefined> = [];
   const service = { respond: async (): Promise<Response> => new Response(JSON.stringify(f.manifest), { headers: { etag: '"snapshot"' } }) };
   const dependencies: ProgressiveLoaderDependencies = {
@@ -263,13 +264,14 @@ function loaderFixture() {
       if (String(input) !== BASE) return f.fetcher(input, init);
       manifestRequests.push(init); return service.respond();
     },
-    openManifestCache: async () => manifestCache, openArtifactCache: async () => f.cache,
+    openManifestCache: async () => manifestCache, openReservedManifestCache: async () => reservedCache,
+    openArtifactCache: async () => f.cache,
     sqlite: async () => f.openRepository,
     acceptVersion: version => { versions.push(version); },
     legacy: async () => ({ load: async options => { legacyOptions.push(options); return f.openRepository(new TextEncoder().encode('catalog')); }, close: async () => {} }),
   };
   const create = (overrides: ProgressiveLoaderDependencies = {}) => new ProgressiveDatabaseLoader({ databaseUrl: BASE.replace('.manifest.json', ''), onProgress: value => progress.push(value) }, { ...dependencies, ...overrides });
-  return { f, manifestCache, progress, versions, manifestRequests, legacyOptions, service, dependencies, create };
+  return { f, manifestCache, reservedCache, progress, versions, manifestRequests, legacyOptions, service, dependencies, create };
 }
 
 describe('published-layout browser startup', () => {
@@ -684,7 +686,122 @@ async function offlineFixture(atlas = false) {
 }
 const selection = (genomeIds: number[] = [], atlasModels: string[] = []) => ({ genomeIds, atlasModels });
 
+function publishChangedGeneration(f: ReturnType<typeof fixture>, version: number) {
+  const catalog = `catalog-${version}`.padEnd(512, ' ');
+  f.manifest.catalog = descriptor(catalog);
+  f.responses.set(dataArtifactUrl(BASE, f.manifest.catalog), catalog);
+  const shard = `generation-${version}:2`.padEnd(512, ' ');
+  f.manifest.genomes[1].artifact = descriptor(shard);
+  f.responses.set(dataArtifactUrl(BASE, f.manifest.genomes[1].artifact), shard);
+  identity(f.manifest);
+  return f.manifest.contentVersion;
+}
+
 describe('user-selectable offline datasets through the application repository', () => {
+  test('a reservation survives two online generations and reopens its own catalog and shards offline', async () => {
+    const h = await offlineFixture(true);
+    const savedVersion = h.f.manifest.contentVersion;
+    const chosen = selection([2], ['model']);
+    await h.offline.prepare(chosen);
+    await h.loader.close();
+    for (const version of [2, 3]) {
+      const latest = publishChangedGeneration(h.f, version);
+      const online = h.create();
+      try {
+        const repo = await online.load({ forceDownload: version === 3 });
+        assert.equal(repo.getOfflineDataset!()!.describe().contentVersion, latest);
+        assert.equal((await (await h.manifestCache.match(BASE))!.json()).contentVersion, latest);
+        assert.equal((await (await h.reservedCache.match(BASE))!.json()).contentVersion, savedVersion);
+      } finally { await online.close(); }
+    }
+    h.f.responses.clear();
+    h.service.respond = async () => { throw new Error('offline'); };
+    const offline = h.create();
+    try {
+      const before = h.f.network.length;
+      const repo = await offline.load(), access = repo.getOfflineDataset!()!;
+      assert.equal(access.describe().contentVersion, savedVersion);
+      assert.equal(h.progress.at(-1)?.cacheStatus, 'saved-selection');
+      assert.deepEqual((await access.saved())?.selection, chosen);
+      assert.equal((await access.inspect(chosen)).ready, true);
+      assert.equal((await repo.getGenes(2))[0].id, 20);
+      assert.equal((await repo.getLatentSpaceAtlas({ model: 'model' })).length, 3);
+      assert.equal((await access.prepare(chosen)).ready, true);
+      assert.equal(h.f.network.length, before);
+      assert.equal((await (await h.manifestCache.match(BASE))!.json()).contentVersion, h.f.manifest.contentVersion);
+      await access.release();
+    } finally { await offline.close(); }
+    const reopened = h.create();
+    try {
+      const repo = await reopened.load();
+      assert.equal(repo.getOfflineDataset!()!.describe().contentVersion, h.f.manifest.contentVersion);
+      await assert.rejects(repo.getGenes(2), /offline/);
+    } finally { await reopened.close(); }
+  });
+
+  test('discarding the reserved manifest write cannot displace a prepared offline selection', async () => {
+    const h = await offlineFixture();
+    const original = h.f.manifest.contentVersion;
+    await h.offline.prepare(selection([2]));
+    await h.loader.close();
+    publishChangedGeneration(h.f, 2);
+    h.reservedCache.put = async () => {};
+    const forced = h.create();
+    try {
+      await assert.rejects(forced.load({ forceDownload: true }), /could not be saved/);
+      assert.equal((await (await h.manifestCache.match(BASE))!.json()).contentVersion, original);
+    } finally { await forced.close(); }
+    h.f.responses.clear();
+    h.service.respond = async () => new Response(null, { status: 503 });
+    const offline = h.create();
+    try {
+      const repo = await offline.load();
+      assert.equal(repo.getOfflineDataset!()!.describe().contentVersion, original);
+      assert.equal((await repo.getGenes(2))[0].id, 20);
+    } finally { await offline.close(); }
+  });
+
+  test('a restored offline tab cannot release or replace a newer reservation', async () => {
+    const h = await offlineFixture();
+    await h.offline.prepare(selection([2])); await h.loader.close();
+    const published = h.service.respond;
+    const latest = publishChangedGeneration(h.f, 2);
+    const online = h.create(), restored = h.create();
+    try {
+      const current = (await online.load()).getOfflineDataset!()!;
+      h.service.respond = async () => { throw new Error('offline'); };
+      const old = (await restored.load()).getOfflineDataset!()!;
+      assert.notEqual(old.describe().contentVersion, latest);
+      h.service.respond = published;
+      await current.prepare(selection([3]));
+      assert.equal((await old.inspect(selection([2]))).startupManifestAvailable, false);
+      await assert.rejects(old.release(), /selection changed/);
+      await assert.rejects(old.prepare(selection([1])), /selection changed/);
+      assert.deepEqual((await current.saved())?.selection, selection([3]));
+      assert.equal((await current.inspect(selection([3]))).ready, true);
+    } finally { await Promise.all([online.close(), restored.close()]); }
+  });
+
+  test('a damaged archived manifest or catalog yields the newer verified offline catalog', async () => {
+    for (const damage of ['manifest', 'catalog']) {
+      const h = await offlineFixture(), reservedCatalog = h.f.manifest.catalog;
+      await h.offline.prepare(selection([2])); await h.loader.close();
+      const latest = publishChangedGeneration(h.f, 2);
+      const online = h.create(); await online.load(); await online.close();
+      if (damage === 'manifest') await h.reservedCache.put(BASE, new Response('{}'));
+      else await h.f.cache.put(dataArtifactUrl(BASE, reservedCatalog), new Response('damaged'));
+      h.f.responses.clear();
+      h.service.respond = async () => { throw new Error('offline'); };
+      const offline = h.create();
+      try {
+        const repo = await offline.load();
+        assert.equal(repo.getOfflineDataset!()!.describe().contentVersion, latest);
+        assert.equal((await repo.listPhages()).length, 3);
+        await assert.rejects(repo.getGenes(2), /offline/);
+        assert.deepEqual(h.legacyOptions, []);
+      } finally { await offline.close(); }
+    }
+  });
   test('describes and plans exact catalog IDs without network or genome SQL opening', async () => {
     const h = await offlineFixture(true);
     try {

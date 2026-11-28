@@ -1,10 +1,11 @@
 /** Auto-select the published layout; version 3 never falls back to a monolithic download. */
 import { databaseManifestUrl, type DatabaseLoaderConfig, type DatabaseLoadProgress, type PhageRepository } from './types';
 import { ProgressiveCatalogLoadError, ProgressivePhageRepository } from './ProgressivePhageRepository';
-import { VerifiedArtifactStore, readBoundedResponse, withArtifactCacheLock, type ArtifactCache, type FetchLike } from './progressive-artifacts';
+import { VerifiedArtifactStore, openArtifactCache, readOfflineSelection, readBoundedResponse, withArtifactCacheLock, type ArtifactCache, type FetchLike } from './progressive-artifacts';
 import { PROGRESSIVE_LIMITS, parseProgressiveManifest, verifyProgressiveManifest, type ProgressiveManifest } from './progressive-manifest';
 
 export const PROGRESSIVE_MANIFEST_CACHE = 'phage-explorer-manifests-v3';
+const RESERVED_MANIFEST_CACHE = 'phage-explorer-offline-manifests-v3';
 export interface RepositoryLoader {
   load(options?: { forceDownload?: boolean }): Promise<PhageRepository>;
   close(): Promise<void>;
@@ -12,6 +13,7 @@ export interface RepositoryLoader {
 export interface ProgressiveLoaderDependencies {
   fetch?: FetchLike;
   openManifestCache?: () => Promise<Pick<ArtifactCache, 'match' | 'put' | 'keys'> | undefined>;
+  openReservedManifestCache?: () => Promise<ManifestCache | undefined>;
   openArtifactCache?: () => Promise<ArtifactCache | undefined>;
   sqlite?: () => Promise<(bytes: Uint8Array) => PhageRepository>;
   legacy?: (config: DatabaseLoaderConfig) => Promise<RepositoryLoader>;
@@ -82,6 +84,22 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
       return { manifest, etag: response.headers.get('etag') };
     } catch { this.assertOpen(); return null; }
   }
+  private openReservedCache(): Promise<ManifestCache | undefined> {
+    const open = this.dependencies.openReservedManifestCache ?? (async () =>
+      typeof caches === 'undefined' ? undefined : caches.open(RESERVED_MANIFEST_CACHE));
+    return abortable(open(), this.lifetime.signal);
+  }
+  /** A retained manifest authorizes no reads by itself. Only the current reservation selects it. */
+  private async reservedStartup(currentVersion?: string): Promise<CachedManifest | null> {
+    try {
+      const archived = await this.cached(await this.openReservedCache());
+      if (!archived || archived.manifest.contentVersion === currentVersion) return null;
+      const cache = await abortable((this.dependencies.openArtifactCache ?? openArtifactCache)(), this.lifetime.signal);
+      if (!cache) return null;
+      const selection = await abortable(readOfflineSelection(cache, this.manifestUrl), this.lifetime.signal);
+      return selection?.contentVersion === archived.manifest.contentVersion ? archived : null;
+    } catch { this.assertOpen(); return null; }
+  }
   private async legacyLoad(forceDownload: boolean): Promise<PhageRepository> {
     this.assertOpen();
     const create = this.dependencies.legacy ?? (async (config: DatabaseLoaderConfig) => {
@@ -138,6 +156,7 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
     let manifest: ProgressiveManifest | null = null;
     let etag: string | null = null;
     let fromCache = false;
+    let publishedManifestUnavailable = false;
     let recovery: string | undefined;
     try {
       this.assertOpen();
@@ -155,6 +174,7 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
         manifest = cached.manifest; etag = cached.etag; fromCache = true;
       } else if (!response?.ok) {
         if (forceDownload) throw new Error(`Dataset manifest download failed${response ? ` (HTTP ${response.status})` : ''}.`);
+        publishedManifestUnavailable = true;
         if (cached) { manifest = cached.manifest; etag = cached.etag; fromCache = true; }
         // No known v3 snapshot: let the existing v2 loader use its verified offline cache.
       } else {
@@ -167,6 +187,7 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
         } catch (error) {
           this.assertOpen();
           if (forceDownload || !cached) throw error;
+          publishedManifestUnavailable = true;
           manifest = cached.manifest; etag = cached.etag; fromCache = true;
           recovery = error instanceof Error ? error.message : 'Dataset manifest transfer failed.';
         }
@@ -184,6 +205,18 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
       clearTimeout(timer); this.lifetime.signal.removeEventListener('abort', cancel);
     }
     this.assertOpen();
+    if (publishedManifestUnavailable) {
+      const reserved = await this.reservedStartup(cached?.manifest.contentVersion);
+      if (reserved) {
+        try {
+          return await this.openGeneration(reserved.manifest, reserved.etag, true, cache, cached, false, undefined, true);
+        } catch (error) {
+          this.assertOpen();
+          if (!cached || !(error instanceof ProgressiveCatalogLoadError)) throw error;
+          recovery = error.message;
+        }
+      }
+    }
     if (!manifest) return this.legacyLoad(forceDownload);
     try {
       return await this.openGeneration(manifest, etag, fromCache, cache, cached, forceDownload, recovery);
@@ -200,15 +233,19 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
 
   private async openGeneration(manifest: ProgressiveManifest, etag: string | null, fromCache: boolean,
     cache: ManifestCache | undefined, cached: CachedManifest | null, forceDownload: boolean,
-    recovery?: string): Promise<PhageRepository> {
+    recovery?: string, reservedStartup = false): Promise<PhageRepository> {
     this.report({ stage: 'initializing', percent: 30, message: 'Opening the catalog. Genome data will load on demand.', cached: fromCache });
     const openRepository = await abortable((this.dependencies.sqlite ?? openSqlite)(), this.lifetime.signal);
     this.assertOpen();
     const selectedManifest = manifest;
-    const assertSelectionWritable = async () => {
+    const assertSelectionWritable = async (): Promise<void> => {
       this.assertOpen();
       if (!cache) throw new Error('Offline startup manifest storage is unavailable.');
       const previous = await this.cached(cache, true);
+      if (reservedStartup) {
+        if ((await store.getOfflineSelection())?.contentVersion === selectedManifest.contentVersion) return;
+        throw new Error('The saved offline selection changed. Reload before changing it again.');
+      }
       if (previous && previous.manifest.contentVersion !== selectedManifest.contentVersion) {
         throw new Error('Another dataset version is saved for startup. Reload this tab before changing an offline selection.');
       }
@@ -239,12 +276,12 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
       return new Response(JSON.stringify(value), { headers });
     };
     const offlineManifest = {
-      available: async () => (await this.cached(cache))?.manifest.contentVersion === selectedManifest.contentVersion,
+      available: async () => (reservedStartup ? await this.reservedStartup() : await this.cached(cache))?.manifest.contentVersion === selectedManifest.contentVersion,
       // The store calls this under withArtifactCacheLock, after checking all files.
       publish: async () => {
         await assertSelectionWritable();
         this.assertOpen();
-        await cache!.put(this.manifestUrl, manifestResponse());
+        if (!reservedStartup) await cache!.put(this.manifestUrl, manifestResponse());
         if (!(await offlineManifest.available())) throw new Error('Offline startup manifest could not be verified after saving.');
       },
     };
@@ -256,7 +293,9 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
       // Artifact persistence precedes the manifest pointer: a failed catalog never replaces the old snapshot.
       let persisted = false;
       let superseded = false;
-      if (cache && store.getTransferLedger().storageAvailable) {
+      if (reservedStartup) {
+        persisted = await offlineManifest.available() && store.getTransferLedger().storageAvailable;
+      } else if (cache && store.getTransferLedger().storageAvailable) {
         try {
           await abortable(withArtifactCacheLock(async () => {
             this.assertOpen();
@@ -281,6 +320,15 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
             if (sameGeneration && (changedDuringLoad || current?.etag === etag)) {
               persisted = true;
               return;
+            }
+            // The reservation pins its catalog and selected shards. Keep the matching
+            // manifest before advancing the online pointer so they can still be opened.
+            // One retained descriptor per dataset URL suffices across later updates.
+            if (current && !sameGeneration && (await store.getOfflineSelection())?.contentVersion === currentVersion) {
+              const archive = await this.openReservedCache();
+              if (!archive) return;
+              await archive.put(this.manifestUrl, manifestResponse(current.manifest, current.etag));
+              if ((await this.cached(archive, true))?.manifest.contentVersion !== currentVersion) return;
             }
             this.assertOpen();
             // Cache.put cannot be cancelled. Keep the lock until the write settles
@@ -316,7 +364,7 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
       this.report({ stage: 'ready', percent: 100,
         message: recovery ? `Reopened the previous verified dataset because the update could not be loaded: ${recovery} ${availability}` : availability,
         ...(recovery ? { updateStatus: 'failed' as const } : {}),
-        cached: store.getTransferLedger().networkBytes === 0, cacheStatus: persisted ? 'saved' : 'unavailable' });
+        cached: store.getTransferLedger().networkBytes === 0, cacheStatus: persisted ? (reservedStartup ? 'saved-selection' : 'saved') : 'unavailable' });
       return repository;
     } catch (error) { await repository.close(); throw error; }
   }
