@@ -2,7 +2,7 @@
  * DataLoadingOverlay - Database Loading and Recovery Screen
  *
  * Displays database progress, classifies startup failures, and offers a scoped
- * local-runtime repair path for stale IndexedDB, Workbox, and WASM caches.
+ * replacement application shell when the installed runtime is stale.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -17,28 +17,6 @@ interface DataLoadingOverlayProps {
   onRetry?: () => void;
   /** Local inputs and saved research do not require the curated SQLite catalog. */
   onOpenLocalGenomes?: () => void;
-}
-
-function deleteIndexedDatabase(name: string): Promise<void> {
-  if (typeof indexedDB === 'undefined') return Promise.resolve();
-
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      resolve();
-    };
-
-    try {
-      const request = indexedDB.deleteDatabase(name);
-      request.onsuccess = finish;
-      request.onerror = finish;
-      request.onblocked = finish;
-    } catch {
-      finish();
-    }
-  });
 }
 
 function formatDuration(seconds: number): string {
@@ -220,6 +198,7 @@ export function DataLoadingOverlay({
       normalizedError.includes('failed to download') ||
       normalizedError.includes('network error') ||
       normalizedError.includes('failed to fetch');
+    const canRepairShell = !offline && !isWasmUnsupported && typeof navigator !== 'undefined' && 'serviceWorker' in navigator;
 
     const headline = offline
       ? 'You appear to be offline'
@@ -236,10 +215,10 @@ export function DataLoadingOverlay({
       : isWasmUnsupported
         ? 'Phage Explorer requires WebAssembly to run SQLite in your browser. Use a current Chromium, Firefox, or Safari release.'
         : isWasmLoadFailure
-          ? 'A stale service worker or cached WASM response can block SQLite startup. Retry first; if it repeats, repair the local cache and reload cleanly.'
+          ? 'A stale service worker or cached WASM response can block SQLite startup. Retry first, then repair the application if the error persists.'
           : isDownloadFailure
             ? 'This can happen because of a flaky network, a blocked asset request, or a transient edge-cache issue.'
-            : 'Retry the load. The repair option below can recover from stale local application data without changing your preferences.';
+            : 'Retry the download. If the application itself is stale, install a fresh copy of its runtime below.';
 
     const diagnostics = [
       progress
@@ -260,45 +239,19 @@ export function DataLoadingOverlay({
       }
     };
 
-    const handleRepairLocalData = async (): Promise<void> => {
+    const handleRepairShell = async (): Promise<void> => {
       if (typeof window === 'undefined') return;
       setIsRepairing(true);
       setRepairError(null);
 
       try {
-        await Promise.all([
-          deleteIndexedDatabase('phage-explorer-db'),
-          deleteIndexedDatabase('workbox-expiration'),
-        ]);
-
-        if ('caches' in window) {
-          const cacheNames = await window.caches.keys();
-          const appCacheNames = cacheNames.filter((name) => {
-            const normalized = name.toLowerCase();
-            return (
-              normalized.includes('phage') ||
-              normalized.includes('wasm') ||
-              normalized.includes('sql-js') ||
-              normalized.includes('workbox-precache')
-            );
-          });
-          await Promise.all(appCacheNames.map((name) => window.caches.delete(name)));
-        }
-
-        if ('serviceWorker' in navigator) {
-          const registrations = typeof navigator.serviceWorker.getRegistrations === 'function'
-            ? await navigator.serviceWorker.getRegistrations()
-            : [await navigator.serviceWorker.getRegistration()].filter(
-                (registration): registration is ServiceWorkerRegistration => Boolean(registration)
-              );
-          await Promise.all(registrations.map((registration) => registration.unregister()));
-        }
-
-        window.setTimeout(() => window.location.reload(), 50);
+        const { repairApplicationShell } = await import('../registerSW');
+        await repairApplicationShell();
+        window.location.reload();
       } catch (repairFailure) {
         const message = repairFailure instanceof Error
           ? repairFailure.message
-          : 'Could not clear local application data';
+          : 'Could not install the replacement shell';
         setRepairError(message);
         setIsRepairing(false);
       }
@@ -405,23 +358,23 @@ export function DataLoadingOverlay({
                 Retry
               </button>
             )}
-            {!offline && !isWasmUnsupported && (
+            {canRepairShell && (
               <button
                 type="button"
-                onClick={() => void handleRepairLocalData()}
+                onClick={() => void handleRepairShell()}
                 className="btn btn-ghost"
                 disabled={isRepairing}
               >
-                {isRepairing ? 'Repairing…' : 'Repair local cache'}
+                {isRepairing ? 'Installing fresh shell…' : 'Repair application shell'}
               </button>
             )}
           </div>
 
           {localWorkspaceAction}
 
-          {!offline && !isWasmUnsupported && (
+          {canRepairShell && (
             <p style={{ color: colors.textMuted, fontSize: '0.75rem', lineHeight: 1.45, margin: '1rem 0 0' }}>
-              Repair removes only this site’s downloaded database, service worker, and runtime caches. Saved display preferences remain intact.
+              Downloads the application again and reloads when it is ready. Your downloaded genomes and saved work stay available.
             </p>
           )}
         </div>

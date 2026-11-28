@@ -14,12 +14,21 @@
  * The precache with content-hashed filenames handles JS/CSS versioning.
  */
 
-import { precacheAndRoute, cleanupOutdatedCaches, createHandlerBoundToURL, matchPrecache } from 'workbox-precaching';
+import { PrecacheController, PrecacheRoute } from 'workbox-precaching';
+import { obsoleteRuntimeCache, runtimeCache, workerGeneration } from './service-worker-runtime';
 import { registerRoute, NavigationRoute, setCatchHandler } from 'workbox-routing';
 import { CacheFirst, StaleWhileRevalidate } from 'workbox-strategies';
 import { ExpirationPlugin } from 'workbox-expiration';
 
 declare const self: ServiceWorkerGlobalScope;
+const scope = self.registration.scope;
+const generation = workerGeneration(self.location.href, scope) ?? 'default';
+const shell = new PrecacheController({
+  cacheName: runtimeCache(scope, 'shell', generation),
+  plugins: generation === 'default' ? [] : [{
+    requestWillFetch: async ({ request }) => new Request(request, { cache: 'reload' }),
+  }],
+});
 
 // =============================================================================
 // Configuration
@@ -28,9 +37,8 @@ declare const self: ServiceWorkerGlobalScope;
 /** Cache names for organization and debugging */
 const CACHE_NAMES = {
   // v2: Removed StaleWhileRevalidate for JS/CSS to fix stale code bugs
-  precache: 'phage-precache-v2',
   database: 'phage-database-v2',
-  wasm: 'wasm-cache-v2',
+  wasm: runtimeCache(scope, 'wasm', generation),
   sqlJs: 'sql-js-wasm-v2',
   pdb: 'pdb-structures-v2',
   fonts: 'google-fonts-v2',
@@ -41,39 +49,31 @@ const CACHE_NAMES = {
 // Cache Cleanup
 // =============================================================================
 
-// Clean up old caches from previous versions
-cleanupOutdatedCaches();
-
-// Also clean up v1 caches that may contain stale JS
-const OLD_CACHE_PREFIXES = [
-  'phage-precache-v1',
-  'phage-database',
-  'wasm-cache',
-  'sql-js-wasm',
-  'pdb-structures',
-  'google-fonts',
-  'images',
-  'static-resources', // v1 JS/CSS cache that caused stale code bugs
-  'pages-v2',
-];
-
-/** Delete old v1 caches */
+/** Only an activated replacement can retire an older, app-and-scope-owned shell. */
 async function deleteOldCaches(): Promise<void> {
   const cacheNames = await caches.keys();
-  await Promise.all(
-    cacheNames
-      .filter((name) => OLD_CACHE_PREFIXES.some((prefix) => name === prefix))
-      .map((name) => {
-        if (import.meta.env.DEV) {
-          console.log('[SW] Deleting old cache:', name);
-        }
-        return caches.delete(name);
-      })
-  );
+  const live = new Set([generation]);
+  for (const worker of [self.registration.installing, self.registration.waiting, self.registration.active]) {
+    const id = worker && workerGeneration(worker.scriptURL, scope);
+    if (id) live.add(id);
+  }
+  await Promise.all(cacheNames.filter(name => obsoleteRuntimeCache(name, scope, live)).map(name => caches.delete(name)));
 }
 
 // Precache static assets (injected by build tool)
-precacheAndRoute(self.__WB_MANIFEST || []);
+shell.addToCacheList(self.__WB_MANIFEST || []);
+self.addEventListener('install', event => {
+  event.waitUntil(shell.install(event).catch(async error => {
+    // A failed first install of a repair generation may have staged some assets.
+    // Keep the active shell if an ordinary update to that same generation fails.
+    if (generation !== 'default' && self.registration.active?.scriptURL !== self.location.href) {
+      await caches.delete(shell.strategy.cacheName);
+    }
+    throw error;
+  }));
+});
+self.addEventListener('activate', event => { event.waitUntil(shell.activate(event)); });
+registerRoute(new PrecacheRoute(shell));
 
 // =============================================================================
 // Application Data Caching
@@ -223,12 +223,12 @@ registerRoute(
 // =============================================================================
 
 // Serve the precached app shell for navigations to avoid mismatched HTML/assets.
-registerRoute(new NavigationRoute(createHandlerBoundToURL('/index.html')));
+registerRoute(new NavigationRoute(shell.createHandlerBoundToURL(new URL('index.html', scope).pathname)));
 
 // Catch handler: if navigation fails and index.html is unavailable offline, fall back to offline.html
 setCatchHandler(async ({ request }) => {
   if (request.destination === 'document') {
-    return (await matchPrecache('/offline.html')) || (await caches.match('/offline.html')) || Response.error();
+    return (await shell.matchPrecache(new URL('offline.html', scope).href)) || Response.error();
   }
   return Response.error();
 });

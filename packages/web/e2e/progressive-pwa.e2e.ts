@@ -8,7 +8,7 @@ import type { ProgressiveManifest } from '../src/db/progressive-manifest';
 import { setupTestHarness } from './e2e-harness';
 
 const USER_AGENT = 'dicklesworthstone-release-wave/1.0 (+https://github.com/Dicklesworthstone)';
-interface Assets { origin: string; manifest: ProgressiveManifest; requests: string[]; corruptCatalog: boolean; delays: Map<string, Promise<void>> }
+interface Assets { origin: string; manifest: ProgressiveManifest; requests: string[]; corruptCatalog: boolean; corruptManifest?: boolean; delays: Map<string, Promise<void>> }
 
 // Real built application + real production publisher. No fake repositories or
 // replacement app/worker scripts. A private origin isolates offline caches.
@@ -29,6 +29,15 @@ const test = base.extend<{ assets: Assets }>({
         const url = new URL(request.url ?? '/', 'http://localhost');
         assets.requests.push(url.pathname);
         await assets.delays.get(url.pathname);
+        if (url.pathname === '/sibling/sw.js') {
+          response.writeHead(200, { 'Content-Type': 'application/javascript' }).end("self.addEventListener('install', () => self.skipWaiting());");
+          return;
+        }
+        if (url.pathname === '/phage.db.manifest.json' && assets.corruptManifest) {
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+            .end(JSON.stringify({ ...assets.manifest, contentVersion: '0'.repeat(64) }));
+          return;
+        }
         // A v3 failure cannot obtain legacy bytes from a v2 build's public directory.
         if (url.pathname === '/phage.db' || url.pathname === '/phage.db.gz') { response.writeHead(404).end(); return; }
         const dataset = url.pathname === '/phage.db.manifest.json' || url.pathname.startsWith('/phage-data/');
@@ -235,6 +244,50 @@ test('Settings prepares an unvisited genome, restores offline, and releases only
     expect(assets.requests.filter(value => value === path)).toHaveLength(1);
     await settings.getByRole('button', { name: 'Close offline manager', exact: true }).click();
     await expect(panel).toHaveCount(0);
+    expect(pageErrors).toEqual([]);
+  } finally { await context.setOffline(false); await finalize(); }
+});
+
+test('startup shell repair keeps a prepared offline genome and a sibling application available', async ({ page, context, assets }, testInfo) => {
+  const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  try {
+    await page.goto(`${assets.origin}/?phage=lambda&model=0`);
+    await expectCatalog(page, assets.manifest.genomes.length);
+    await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+    const { panel } = await openOfflineManager(page);
+    const choice = await uncachedChoice(page, assets);
+    await panel.locator(`[data-genome-id="${choice.id}"]`).getByRole('checkbox').check();
+    await panel.getByRole('button', { name: 'Prepare / resume selection', exact: true }).click();
+    await expect(panel.getByTestId('offline-verification')).toHaveAttribute('data-ready', 'true');
+    const before = await cachedFile(page, choice.artifact.path);
+    await page.evaluate(async () => {
+      await navigator.serviceWorker.register('/sibling/sw.js', { scope: '/sibling/' });
+      const cache = await caches.open('sibling-wasm');
+      await cache.put('/sibling/state', new Response('saved work'));
+    });
+    await expect.poll(() => page.evaluate(async () => (await navigator.serviceWorker.getRegistration('/sibling/'))?.active?.scriptURL))
+      .toBe(assets.origin + '/sibling/sw.js');
+    assets.corruptManifest = true;
+    await page.reload();
+    const repair = page.getByRole('button', { name: 'Repair application shell', exact: true });
+    await expect(repair).toBeVisible();
+    await context.setOffline(true);
+    await expect(repair).toHaveCount(0);
+    await context.setOffline(false);
+    assets.corruptManifest = false;
+    await Promise.all([page.waitForEvent('domcontentloaded'), repair.click()]);
+    await expectCatalog(page, assets.manifest.genomes.length);
+    expect(await page.evaluate(() => navigator.serviceWorker.controller?.scriptURL)).toMatch(/\/sw\.js\?repair=/);
+    expect(await page.evaluate(async () => (await navigator.serviceWorker.getRegistration('/sibling/'))?.active?.scriptURL))
+      .toBe(assets.origin + '/sibling/sw.js');
+    expect(await page.evaluate(async () => (await (await caches.open('sibling-wasm')).match('/sibling/state'))?.text())).toBe('saved work');
+    await context.setOffline(true); await page.reload();
+    await expectCatalog(page, assets.manifest.genomes.length);
+    expect(await cachedFile(page, choice.artifact.path)).toEqual(before);
+    const reopened = (await openOfflineManager(page)).panel;
+    await expect(reopened.locator(`[data-genome-id="${choice.id}"]`).getByRole('checkbox')).toBeChecked();
+    await reopened.getByRole('button', { name: 'Check saved files', exact: true }).click();
+    await expect(reopened.getByTestId('offline-verification')).toHaveAttribute('data-ready', 'true');
     expect(pageErrors).toEqual([]);
   } finally { await context.setOffline(false); await finalize(); }
 });

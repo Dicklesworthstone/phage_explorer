@@ -3,6 +3,7 @@
  *
  * Registers the service worker and handles updates.
  */
+import { applicationScope, workerGeneration } from './service-worker-runtime';
 
 export interface ServiceWorkerCallbacks {
   onUpdate?: () => void;
@@ -28,6 +29,21 @@ function ensureOfflineListener(): void {
   });
 }
 
+function pageScope(): string {
+  return applicationScope(import.meta.env.BASE_URL, window.location.href);
+}
+
+/** getRegistration may return the enclosing site's registration for a nested app. */
+async function ownRegistration(container: ServiceWorkerContainer, scope: string): Promise<ServiceWorkerRegistration | undefined> {
+  const registration = await container.getRegistration(scope);
+  if (!registration || registration.scope !== scope) return undefined;
+  const workers = [registration.installing, registration.waiting, registration.active].filter(worker => worker !== null);
+  if (!workers.length || workers.some(worker => !workerGeneration(worker.scriptURL, scope))) {
+    throw new Error('Another application owns the service worker at this address.');
+  }
+  return registration;
+}
+
 /**
  * Register the service worker
  */
@@ -46,8 +62,11 @@ export async function registerServiceWorker(
     if (callbacks.onSuccess) successCallbacks.add(callbacks.onSuccess);
     if (callbacks.onOffline) offlineCallbacks.add(callbacks.onOffline);
 
-    const registration = await navigator.serviceWorker.register('/sw.js', {
-      scope: '/',
+    const scope = pageScope();
+    const existing = await ownRegistration(navigator.serviceWorker, scope);
+    const worker = existing?.installing ?? existing?.waiting ?? existing?.active;
+    const registration = await navigator.serviceWorker.register(worker?.scriptURL ?? new URL('sw.js', scope).href, {
+      scope, updateViaCache: 'none',
     });
 
     registrationForUpdates = registration;
@@ -106,7 +125,7 @@ export async function registerServiceWorker(
  * Trigger service worker update
  */
 export async function updateServiceWorker(): Promise<void> {
-  const registration = await navigator.serviceWorker.getRegistration();
+  const registration = await ownRegistration(navigator.serviceWorker, pageScope());
   if (!registration) throw new Error('The update registration is unavailable.');
   if (registration?.waiting) {
     const waiting = registration.waiting;
@@ -148,19 +167,65 @@ export function removeServiceWorkerCallbacks(callbacks: ServiceWorkerCallbacks):
 }
 
 /**
- * Unregister all service workers
+ * Unregister the worker for this application only.
  */
 export async function unregisterServiceWorker(): Promise<boolean> {
   if (!('serviceWorker' in navigator)) {
     return false;
   }
 
-  const registration = await navigator.serviceWorker.getRegistration();
+  const registration = await ownRegistration(navigator.serviceWorker, pageScope());
   if (registration) {
     return registration.unregister();
   }
 
   return false;
+}
+
+/**
+ * Install a replacement shell alongside the active one. The browser installs all
+ * precached assets before accepting SKIP_WAITING. A failed download keeps the old
+ * worker available, including for other open tabs and offline navigation.
+ */
+export async function repairApplicationShell(
+  container: ServiceWorkerContainer | undefined = navigator.serviceWorker,
+  scope = pageScope(),
+  online = () => navigator.onLine,
+): Promise<void> {
+  if (!online()) throw new Error('Reconnect before downloading the application shell.');
+  if (!container) throw new Error('This browser does not support an offline application shell.');
+  await ownRegistration(container, scope);
+  if (!online()) throw new Error('Reconnect before downloading the application shell.');
+  const url = new URL('sw.js', scope);
+  url.searchParams.set('repair', crypto.randomUUID());
+  const registration = await container.register(url.href, { scope, updateViaCache: 'none' });
+  await new Promise<void>((resolve, reject) => {
+    let worker: ServiceWorker | undefined;
+    const finish = (error?: Error) => {
+      clearTimeout(timer);
+      registration.removeEventListener('updatefound', check);
+      container.removeEventListener('controllerchange', check);
+      worker?.removeEventListener('statechange', check);
+      if (error) reject(error); else resolve();
+    };
+    const check = () => {
+      if (container.controller?.scriptURL === url.href) { finish(); return; }
+      const candidate = [registration.installing, registration.waiting, registration.active].find(item => item?.scriptURL === url.href);
+      if (candidate && candidate !== worker) {
+        worker?.removeEventListener('statechange', check);
+        worker = candidate; worker.addEventListener('statechange', check);
+      }
+      if (worker?.state === 'redundant') finish(new Error('The replacement shell could not be installed. Reconnect and retry.'));
+      if (worker?.state === 'installed') {
+        try { worker.postMessage({ type: 'SKIP_WAITING' }); }
+        catch { finish(new Error('The replacement shell could not be activated.')); }
+      }
+    };
+    const timer = setTimeout(() => finish(new Error('The replacement shell did not take control in time. Retry when connected.')), 60_000);
+    registration.addEventListener('updatefound', check);
+    container.addEventListener('controllerchange', check);
+    check();
+  });
 }
 
 export default registerServiceWorker;
