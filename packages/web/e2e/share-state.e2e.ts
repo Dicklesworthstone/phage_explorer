@@ -140,3 +140,39 @@ test.describe('Shareable explorer state', () => {
     await finalize();
   });
 });
+
+test('two tabs follow verified catalog views through the named sync group', async ({ page: host, context }) => {
+  const second = await context.newPage();
+  const group = 'catalog-' + crypto.randomUUID();
+  const connect = async (page: Page) => {
+    await page.keyboard.press('Control+k');
+    const palette = page.getByTestId('overlay-commandPalette');
+    await palette.getByRole('combobox').fill('Multi-Tab Sync');
+    await palette.getByRole('option', { name: /Multi-Tab Sync/i }).first().click();
+    const panel = page.getByTestId('overlay-collaboration');
+    await panel.getByLabel('Sync Group', { exact: true }).fill(group);
+    await panel.getByRole('button', { name: 'Connect Multi-Tab Sync' }).click();
+    await expect(panel.getByRole('button', { name: 'Disconnect Tab' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(panel).toBeHidden();
+  };
+  try {
+    await host.goto('/?phage=t4&view=aa&frame=1&model=0', { waitUntil: 'domcontentloaded' });
+    await dismissWelcomeIfPresent(host);
+    await expectPhageName(host, 'Enterobacteria phage T4');
+    await connect(host);
+    await second.goto('/?phage=lambda&model=0', { waitUntil: 'domcontentloaded' });
+    await dismissWelcomeIfPresent(second);
+    await expectPhageName(second, 'Enterobacteria phage lambda');
+    await connect(second);
+    await expectPhageName(second, 'Enterobacteria phage T4');
+    await expect(second.getByRole('radio', { name: 'Amino Acids view' })).toHaveAttribute('aria-checked', 'true');
+    await expect.poll(() => queryParam(second, 'frame')).toBe('1');
+    await second.keyboard.press('j');
+    await expect.poll(() => queryParam(second, 'phage')).not.toBe('t4');
+    const changed = await second.locator('.detail-card').getByRole('heading', { level: 3 }).innerText();
+    await expectPhageName(host, changed);
+    await host.getByRole('radio', { name: 'DNA view' }).click();
+    await expect(second.getByRole('radio', { name: 'DNA view' })).toHaveAttribute('aria-checked', 'true');
+  } finally { await second.close(); }
+});

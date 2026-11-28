@@ -6,6 +6,7 @@ export type PeerId = string;
 export type SessionId = string;
 
 export interface UserPresence {
+  joinedAt?: number;
   id: PeerId;
   name: string;
   color: string;

@@ -20,6 +20,8 @@ export interface SelectionView {
 }
 export interface PhageSelectionOptions {
   signal?: AbortSignal;
+  /** A peer request reports its failure in Multi-Tab Sync, outside the user's Retry flow. */
+  background?: boolean;
   /** A verified position is published together with its complete, still-owned source. */
   verify?: (selection: PhageSelection) => Promise<SelectionView | void>;
 }
@@ -133,7 +135,7 @@ export class PhageSelectionSession {
       if (!this.owns(operation)) return false;
       this.operation = null;
       this.publish({ ...this.snapshot, pendingIndex: null,
-        error: { index, message: cause instanceof Error ? cause.message : 'Could not load this genome. Retry the selection.' } });
+        error: options.background ? null : { index, message: cause instanceof Error ? cause.message : 'Could not load this genome. Retry the selection.' } });
       return false;
     } finally { options.signal?.removeEventListener('abort', abort); }
   };

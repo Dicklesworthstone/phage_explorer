@@ -20,6 +20,7 @@ export function CollaborationOverlay(): React.ReactElement | null {
   const sendMessage = useCollaborationStore((s) => s.sendMessage);
   const syncNavigation = useCollaborationStore((s) => s.syncNavigation);
   const syncOverlays = useCollaborationStore((s) => s.syncOverlays);
+  const syncNotice = useCollaborationStore((s) => s.syncNotice);
   const setSyncNavigation = useCollaborationStore((s) => s.setSyncNavigation);
   const setSyncOverlays = useCollaborationStore((s) => s.setSyncOverlays);
 
@@ -64,10 +65,11 @@ export function CollaborationOverlay(): React.ReactElement | null {
             borderLeft: `3px solid ${colors.primary}`,
           }}
         >
-          Synchronize phage selection, viewport coordinates, and active overlays across browser
-          tabs open on this device via local <code style={{ color: colors.text }}>BroadcastChannel</code>.
+          Follow the same catalog genome, position, reading frame and selected gene across tabs on this device.
+          Each tab verifies its copy of the catalog. Live sync pauses while you browse a private local genome.
         </div>
 
+        {syncNotice && <p role="status">{syncNotice}</p>}
         {!connected ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             <div>
@@ -198,7 +200,7 @@ export function CollaborationOverlay(): React.ReactElement | null {
                   checked={syncOverlays}
                   onChange={(e) => setSyncOverlays(e.target.checked)}
                 />
-                Sync active overlays
+                Sync the active shareable tool
               </label>
             </div>
 

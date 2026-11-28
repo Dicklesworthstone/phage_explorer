@@ -7,6 +7,7 @@
 
 import React, { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ActionRegistryList } from '../../keyboard/actionRegistry';
+import { getShareableTool, isShareableOverlayId, type ShareableOverlayId } from '../../utils/share-state';
 
 let overlayTitleById: Map<string, string> | null = null;
 function getOverlayTitleMap(): Map<string, string> {
@@ -165,6 +166,7 @@ interface OverlayContextValue {
   close: (id?: OverlayId) => void;
   toggle: (id: OverlayId, config?: Partial<OverlayConfig>) => void;
   closeAll: () => void;
+  followSharedTool: (tool: ShareableOverlayId | null) => void;
 
   // Overlay data store (for computed analysis data)
   overlayData: Record<string, unknown>;
@@ -328,6 +330,18 @@ export function OverlayProvider({ children }: OverlayProviderProps): React.React
     setStackState((current) => ({ ...current, stack: [], stackLimitToast: null }));
   }, [clearStackLimitToastTimer]);
 
+  // Keep local forms above the shared tool and never evict one for a peer.
+  const followSharedTool = useCallback((tool: ShareableOverlayId | null) => {
+    setStackState(current => {
+      if (getShareableTool(current.stack) === tool) return current;
+      const local = current.stack.filter(item => !isShareableOverlayId(item.id));
+      if (tool && local.length >= MAX_STACK_SIZE) return current;
+      const tools = tool ? [{ id: tool, config: { ...DEFAULT_CONFIG, id: tool } }] : [];
+      const stack = [...tools, ...local].map((item, i) => ({ ...item, zIndex: BASE_Z_INDEX + i }));
+      return { stack, stackLimitToast: null };
+    });
+  }, []);
+
   // Set overlay data
   const setOverlayData = useCallback((key: string, value: unknown) => {
     setOverlayDataState(prev => ({
@@ -370,6 +384,7 @@ export function OverlayProvider({ children }: OverlayProviderProps): React.React
       close,
       toggle,
       closeAll,
+      followSharedTool,
       overlayData,
       setOverlayData,
     }),
@@ -383,6 +398,7 @@ export function OverlayProvider({ children }: OverlayProviderProps): React.React
       close,
       toggle,
       closeAll,
+      followSharedTool,
       overlayData,
       setOverlayData,
     ]
@@ -424,6 +440,7 @@ export function useOverlay(): OverlayContextValue {
     close: noop,
     toggle: noop,
     closeAll: noop,
+    followSharedTool: noop,
     overlayData: {},
     setOverlayData: noop,
   };

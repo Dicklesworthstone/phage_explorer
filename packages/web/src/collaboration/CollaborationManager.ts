@@ -1,455 +1,221 @@
-/**
- * Collaboration Manager
- *
- * Manages local peer state synchronization via BroadcastChannel.
- * Simulates a collaborative session across tabs.
- */
-
+/** Opt-in collaboration between tabs on this browser origin. */
 import { create } from 'zustand';
 import type { SessionId, UserPresence, SyncMessage, SessionState } from './types';
-import { usePhageStore, type OverlayId } from '@phage-explorer/state';
-import type { ReadingFrame, ViewMode } from '@phage-explorer/core';
+import type { SavedView } from '../../../core/src/saved-views';
+import type { BrowserNavigationSession } from '../hooks/BrowserNavigationSession';
+import { normalizeShareableOverlayId, type ShareableOverlayId } from '../utils/share-state';
 
-// Generate a random ID
-const generateId = () => Math.random().toString(36).slice(2, 11);
-
-// Generate a random color
+const generateId = () => globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
 const generateColor = () => `#${Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0')}`;
 
-type SharedAppState = {
-  phageId?: number;
-  scrollPosition?: number;
-  viewMode?: ViewMode;
-  readingFrame?: ReadingFrame;
-  overlays?: OverlayId[];
-};
-
-export type ChatMessage = {
-  id: string;
-  senderId: string;
-  senderName: string;
-  text: string;
-  timestamp: number;
-};
-
-const isViewMode = (value: unknown): value is ViewMode =>
-  value === 'dna' || value === 'aa' || value === 'dual';
-
-const isReadingFrame = (value: unknown): value is ReadingFrame =>
-  value === 0 || value === 1 || value === 2 || value === -1 || value === -2 || value === -3;
+interface SharedAppState {
+  fingerprint: string;
+  navigation?: SavedView;
+  tool?: ShareableOverlayId | null;
+}
+export interface CollaborationExplorer {
+  navigation: Pick<BrowserNavigationSession, 'currentCatalogView' | 'followCatalogView' | 'subscribe'>;
+  currentTool: () => ShareableOverlayId | null;
+  showTool: (tool: ShareableOverlayId | null) => void;
+}
+export type ChatMessage = { id: string; senderId: string; senderName: string; text: string; timestamp: number };
 
 interface CollaborationStore extends SessionState {
   currentUser: UserPresence;
   chatMessages: ChatMessage[];
   syncNavigation: boolean;
   syncOverlays: boolean;
-
-  // Actions
+  syncNotice: string | null;
+  attachExplorer: (explorer: CollaborationExplorer) => () => void;
+  explorerChanged: () => void;
   createSession: (name: string) => Promise<SessionId>;
   joinSession: (sessionId: SessionId, name: string) => Promise<void>;
   leaveSession: () => void;
   updatePresence: (presence: Partial<UserPresence>) => void;
   setSyncNavigation: (enabled: boolean) => void;
   setSyncOverlays: (enabled: boolean) => void;
-  broadcastState: (state: SharedAppState) => void;
   sendMessage: (text: string) => void;
   dispose: () => void;
 }
 
-// Broadcast channel for multi-tab coordination - lazily initialized
-let channel: BroadcastChannel | null = null;
-let listenerSetup = false;
-let appStoreUnsubscribe: (() => void) | null = null;
-let suppressAppStoreBroadcast = false;
-let pendingStateBroadcast: SharedAppState | null = null;
-let pendingStateBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
-
-const STATE_BROADCAST_THROTTLE_MS = 50;
 const CHAT_HISTORY_LIMIT = 200;
+const STATE_BROADCAST_THROTTLE_MS = 50;
 
-function getChannel(): BroadcastChannel {
-  if (!channel) {
-    channel = new BroadcastChannel('phage_explorer_collab');
-    // Note: listenerSetup is reset in closeChannel(), not here
-    // This ensures the flag reflects actual listener state
-  }
-  return channel;
+function hostOf(peers: Record<string, UserPresence>): string {
+  return Object.values(peers).sort((a, b) =>
+    (a.joinedAt ?? a.lastActive) - (b.joinedAt ?? b.lastActive) || a.id.localeCompare(b.id))[0]?.id ?? '';
 }
 
-function closeChannel(): void {
-  if (channel) {
-    channel.close();
-    channel = null;
-    listenerSetup = false;
-  }
-}
+export const createCollaborationStore = () => create<CollaborationStore>((set, get) => {
+  let channel: BroadcastChannel | null = null;
+  let explorer: CollaborationExplorer | null = null;
+  let unsubscribe: (() => void) | undefined;
+  let following: AbortController | null = null;
+  let pending: ReturnType<typeof setTimeout> | null = null;
+  let lastSent: string | undefined;
+  let joinedWithoutView = false;
 
-export const useCollaborationStore = create<CollaborationStore>((set, get) => {
-  const stopAppStoreSync = () => {
-    if (appStoreUnsubscribe) {
-      appStoreUnsubscribe();
-      appStoreUnsubscribe = null;
-    }
-    if (pendingStateBroadcastTimer) {
-      clearTimeout(pendingStateBroadcastTimer);
-      pendingStateBroadcastTimer = null;
-    }
-    pendingStateBroadcast = null;
+  const snapshot = (): SharedAppState | null => {
+    const { syncNavigation, syncOverlays } = get();
+    const view = explorer?.navigation.currentCatalogView();
+    if (!view || !explorer || (!syncNavigation && !syncOverlays)) return null;
+    return { fingerprint: view.source.fingerprint, ...(syncNavigation && { navigation: view }),
+      ...(syncOverlays && { tool: explorer.currentTool() }) };
   };
-
-  const pickSharedAppState = (appState: ReturnType<typeof usePhageStore.getState>): SharedAppState => {
-    const syncNavigation = get().syncNavigation;
-    const syncOverlays = get().syncOverlays;
-
-    const shared: SharedAppState = {};
-    if (syncNavigation) {
-      shared.phageId = appState.phages[appState.currentPhageIndex]?.id;
-      shared.scrollPosition = appState.scrollPosition;
-      shared.viewMode = appState.viewMode;
-      shared.readingFrame = appState.readingFrame;
-    }
-    if (syncOverlays) {
-      shared.overlays = appState.overlays;
-    }
-    return shared;
+  const post = (type: SyncMessage['type'], body: Record<string, unknown>) => {
+    const { id, currentUser } = get();
+    channel?.postMessage({ type, sender: currentUser.id, timestamp: Date.now(), payload: { ...body, sessionId: id } });
   };
-
-  const applyRemoteAppState = (remote: SharedAppState) => {
-    const collab = get();
-    if (!collab.connected) return;
-
-    const app = usePhageStore.getState();
-
-    // Prevent echo loops: remote changes should not be re-broadcast.
-    suppressAppStoreBroadcast = true;
-
-    try {
-      if (collab.syncNavigation) {
-        if (typeof remote.phageId === 'number') {
-          const idx = app.phages.findIndex((p) => p.id === remote.phageId);
-          if (idx >= 0 && idx !== app.currentPhageIndex) {
-            app.setCurrentPhageIndex(idx);
-          }
-        }
-
-        if (isViewMode(remote.viewMode)) {
-          app.setViewMode(remote.viewMode);
-        }
-        if (isReadingFrame(remote.readingFrame)) {
-          app.setReadingFrame(remote.readingFrame);
-        }
-        if (typeof remote.scrollPosition === 'number') {
-          app.setScrollPosition(Math.max(0, remote.scrollPosition));
+  const stopFollowing = () => { following?.abort(); following = null; };
+  // Re-read at send time. A private workspace, newer viewport or disabled switch
+  // can replace a public view while the outbound timer is waiting.
+  const explorerChanged = () => {
+    if (!channel || pending !== null) return;
+    pending = setTimeout(() => {
+      pending = null;
+      const state = snapshot();
+      if (!state || following) return;
+      const json = JSON.stringify(state);
+      if (joinedWithoutView) {
+        joinedWithoutView = false;
+        const group = get();
+        if (group.hostId !== group.currentUser.id) {
+          // We could not consume the welcome snapshot while the catalog was loading.
+          // Ask for a fresh one before publishing the default viewport to the room.
+          lastSent = json;
+          post('join', { user: group.currentUser }); return;
         }
       }
-
-      if (collab.syncOverlays && Array.isArray(remote.overlays)) {
-        usePhageStore.setState({ overlays: remote.overlays });
-      }
-    } finally {
-      // Let any synchronous subscribers run before re-enabling broadcasts.
-      Promise.resolve().then(() => {
-        suppressAppStoreBroadcast = false;
-      });
-    }
-  };
-
-  const queueStateBroadcast = (nextState: SharedAppState) => {
-    pendingStateBroadcast = { ...(pendingStateBroadcast ?? {}), ...nextState };
-    if (pendingStateBroadcastTimer) return;
-
-    pendingStateBroadcastTimer = setTimeout(() => {
-      pendingStateBroadcastTimer = null;
-      const payload = pendingStateBroadcast;
-      pendingStateBroadcast = null;
-      if (!payload) return;
-      get().broadcastState(payload);
+      if (json !== lastSent) { lastSent = json; post('state', { state }); }
     }, STATE_BROADCAST_THROTTLE_MS);
   };
-
-  const startAppStoreSync = () => {
-    if (appStoreUnsubscribe) return;
-
-    let lastJson = JSON.stringify(pickSharedAppState(usePhageStore.getState()));
-    appStoreUnsubscribe = usePhageStore.subscribe((state) => {
-      const collab = get();
-      if (!collab.connected || !collab.id) return;
-      if (suppressAppStoreBroadcast) {
-        lastJson = JSON.stringify(pickSharedAppState(state));
-        return;
+  const applyRemote = async (state: SharedAppState) => {
+    const tab = explorer, { syncNavigation, syncOverlays } = get();
+    if (!tab || !state || typeof state.fingerprint !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(state.fingerprint) || (!syncNavigation && !syncOverlays)) return;
+    if (state.navigation && (state.navigation.source?.kind !== 'catalog' ||
+        state.navigation.source.fingerprint !== state.fingerprint)) return;
+    const hasSharedTool = state.tool === null ||
+      (typeof state.tool === 'string' && normalizeShareableOverlayId(state.tool) === state.tool);
+    if ((!syncNavigation || !state.navigation) && (!syncOverlays || !hasSharedTool)) return;
+    stopFollowing();
+    const origin = tab.navigation.currentCatalogView();
+    if (!origin) return; // A private workspace or a foreground selection owns the explorer.
+    const owner = new AbortController();
+    following = owner;
+    try {
+      if (syncNavigation && state.navigation) {
+        const accepted = await tab.navigation.followCatalogView(state.navigation, owner.signal);
+        if (following !== owner) return;
+        if (!accepted) { set({ syncNotice: 'The shared view could not be applied to the current catalog or navigation.' }); return; }
       }
-
-      const next = pickSharedAppState(state);
-      const nextJson = JSON.stringify(next);
-      if (nextJson === lastJson) return;
-      lastJson = nextJson;
-      queueStateBroadcast(next);
-    });
-  };
-
-  // Setup message listener when store initializes (idempotent)
-  const setupChannelListener = () => {
-    if (listenerSetup) return; // Prevent duplicate listener setup
-
-    const ch = getChannel();
-    ch.onmessage = (event) => {
-      const msg = event.data as SyncMessage;
-      const state = get();
-
-      if (msg.type === 'presence' && state.connected && state.id === msg.payload.sessionId) {
-        const peer = msg.payload.user as UserPresence;
-        const remoteHostId = msg.payload.hostId as string | undefined;
-        if (peer.id !== state.currentUser.id) {
-          set(s => ({
-            hostId: remoteHostId && s.hostId !== remoteHostId ? remoteHostId : s.hostId,
-            peers: { ...s.peers, [peer.id]: peer }
-          }));
-        }
-      } else if (msg.type === 'join' && state.id === msg.payload.sessionId) {
-        const joinerId = msg.sender;
-        // Respond with my presence
-        ch.postMessage({
-          type: 'presence',
-          sender: state.currentUser.id,
-          timestamp: Date.now(),
-          payload: { sessionId: state.id, user: state.currentUser, hostId: state.hostId }
-        });
-
-        // Host sends an initial state snapshot directly to the joiner.
-        if (state.hostId === state.currentUser.id) {
-          ch.postMessage({
-            type: 'state',
-            sender: state.currentUser.id,
-            timestamp: Date.now(),
-            payload: {
-              sessionId: state.id,
-              target: joinerId,
-              hostId: state.hostId,
-              state: pickSharedAppState(usePhageStore.getState()),
-            },
-          });
-        }
-      } else if (msg.type === 'state' && state.connected && state.id === msg.payload.sessionId) {
-        const target = msg.payload.target as string | undefined;
-        if (target && target !== state.currentUser.id) return;
-
-        const remoteHostId = msg.payload.hostId as string | undefined;
-        if (remoteHostId && state.hostId !== remoteHostId) {
-          set({ hostId: remoteHostId });
-        }
-
-        const remoteState = msg.payload.state as SharedAppState | undefined;
-        if (remoteState && msg.sender !== state.currentUser.id) {
-          applyRemoteAppState(remoteState);
-        }
-      } else if (msg.type === 'chat' && state.connected && state.id === msg.payload.sessionId) {
-        const chat = msg.payload.message as ChatMessage | undefined;
-        if (!chat) return;
-        if (chat.senderId === state.currentUser.id) return;
-
-        set((s) => {
-          if (s.chatMessages.some((m) => m.id === chat.id)) return s;
-          return { chatMessages: [...s.chatMessages, chat].slice(-CHAT_HISTORY_LIMIT) };
-        });
-      } else if (msg.type === 'leave' && state.connected && state.id === msg.payload.sessionId) {
-        const peerId = msg.sender;
-        if (!peerId || peerId === state.currentUser.id) return;
-        set((s) => {
-          if (!s.peers[peerId]) return s;
-          const nextPeers = { ...s.peers };
-          delete nextPeers[peerId];
-          return { peers: nextPeers };
-        });
+      if (tab.navigation.currentCatalogView()?.source.fingerprint !== state.fingerprint) return;
+      if (syncOverlays && hasSharedTool) {
+        tab.showTool(state.tool ?? null);
       }
-    };
-    listenerSetup = true;
-  };
-
-  return {
-    id: '',
-    hostId: '',
-    peers: {},
-    connected: false,
-    currentUser: {
-      id: generateId(),
-      name: 'Anonymous',
-      color: generateColor(),
-      lastActive: Date.now(),
-    },
-    chatMessages: [],
-    syncNavigation: true,
-    syncOverlays: false,
-
-    createSession: async (name: string) => {
-      setupChannelListener();
-      stopAppStoreSync();
-      const sessionId = generateId();
-      const userId = get().currentUser.id;
-      const user = { ...get().currentUser, name };
-
-      set({
-        id: sessionId,
-        hostId: userId,
-        connected: true,
-        currentUser: user,
-        peers: { [userId]: user },
-        chatMessages: [],
-      });
-
-      startAppStoreSync();
-
-      if (import.meta.env.DEV) {
-        console.log(`[Collaboration] Session created: ${sessionId}`);
+      // Suppress only the accepted remote state. A newer local edit remains eligible.
+      const result = snapshot();
+      if (result) {
+        if (syncNavigation && state.navigation) result.navigation = state.navigation;
+        if (syncOverlays && hasSharedTool) result.tool = state.tool;
+        lastSent = JSON.stringify(result);
       }
-      return sessionId;
-    },
-
-    joinSession: async (sessionId: SessionId, name: string) => {
-      setupChannelListener();
-      stopAppStoreSync();
-      const ch = getChannel();
-      const userId = get().currentUser.id;
-      const user = { ...get().currentUser, name };
-
-      set({
-        id: sessionId,
-        hostId: '',
-        connected: true,
-        currentUser: user,
-        peers: { [userId]: user },
-        chatMessages: [],
-      });
-
-      startAppStoreSync();
-
-      // Announce join
-      ch.postMessage({
-        type: 'join',
-        sender: userId,
-        timestamp: Date.now(),
-        payload: { sessionId, user }
-      });
-
-      // Broadcast presence
-      ch.postMessage({
-        type: 'presence',
-        sender: userId,
-        timestamp: Date.now(),
-        payload: { sessionId, user }
-      });
-
-      if (import.meta.env.DEV) {
-        console.log(`[Collaboration] Joined session: ${sessionId}`);
-      }
-    },
-
-    leaveSession: () => {
-      const { connected, id, currentUser } = get();
-      if (connected && id) {
-        try {
-          getChannel().postMessage({
-            type: 'leave',
-            sender: currentUser.id,
-            timestamp: Date.now(),
-            payload: { sessionId: id },
-          });
-        } catch {
-          // Best effort
-        }
-      }
-
-      set({
-        id: '',
-        hostId: '',
-        connected: false,
-        peers: {},
-        chatMessages: [],
-      });
-      stopAppStoreSync();
-      // Close channel when leaving to avoid leaks
-      closeChannel();
-    },
-
-    updatePresence: (presence) => {
-      const { currentUser, connected, id } = get();
-      if (!connected) return;
-
-      const updatedUser = { ...currentUser, ...presence, lastActive: Date.now() };
-      set({ currentUser: updatedUser });
-
-      set(state => ({
-        peers: {
-          ...state.peers,
-          [currentUser.id]: updatedUser
-        }
-      }));
-
-      const ch = getChannel();
-      ch.postMessage({
-        type: 'presence',
-        sender: currentUser.id,
-        timestamp: Date.now(),
-        payload: { sessionId: id, user: updatedUser, hostId: get().hostId }
-      });
-    },
-
-    setSyncNavigation: (enabled) => set({ syncNavigation: enabled }),
-
-    setSyncOverlays: (enabled) => set({ syncOverlays: enabled }),
-
-    broadcastState: (state) => {
-      const { connected, id, currentUser, hostId } = get();
-      if (!connected || !id) return;
-
-      const ch = getChannel();
-      ch.postMessage({
-        type: 'state',
-        sender: currentUser.id,
-        timestamp: Date.now(),
-        payload: {
-          sessionId: id,
-          hostId,
-          state,
-        },
-      });
-    },
-
-    sendMessage: (text) => {
-      const trimmed = text.trim();
-      if (!trimmed) return;
-
-      const { connected, id, currentUser } = get();
-      if (!connected || !id) return;
-
-      const message: ChatMessage = {
-        id: generateId(),
-        senderId: currentUser.id,
-        senderName: currentUser.name,
-        text: trimmed,
-        timestamp: Date.now(),
-      };
-
-      set((s) => ({ chatMessages: [...s.chatMessages, message].slice(-CHAT_HISTORY_LIMIT) }));
-
-      const ch = getChannel();
-      ch.postMessage({
-        type: 'chat',
-        sender: currentUser.id,
-        timestamp: message.timestamp,
-        payload: { sessionId: id, message },
-      });
-    },
-
-    dispose: () => {
-      stopAppStoreSync();
-      set({
-        id: '',
-        hostId: '',
-        connected: false,
-        peers: {},
-        chatMessages: [],
-      });
-      closeChannel();
+      set({ syncNotice: null });
+    } catch {
+      if (following === owner) set({ syncNotice: 'The shared catalog view is unavailable.' });
+    } finally {
+      if (following === owner) { following = null; explorerChanged(); }
     }
   };
+
+  const receive = (event: MessageEvent<SyncMessage>) => {
+    const msg = event.data, state = get();
+    if (!msg || !state.connected || msg.payload?.sessionId !== state.id ||
+        typeof msg.sender !== 'string' || msg.sender === state.currentUser.id) return;
+    if (msg.type === 'join' || msg.type === 'presence') {
+      const peer: UserPresence = msg.payload.user;
+      if (!peer || peer.id !== msg.sender || typeof peer.name !== 'string' || !Number.isFinite(peer.lastActive)) return;
+      const peers = { ...state.peers, [peer.id]: peer }, hostId = hostOf(peers);
+      set({ peers, hostId });
+      if (msg.type === 'join') {
+        post('presence', { user: get().currentUser });
+        const initial = hostId === state.currentUser.id ? snapshot() : null;
+        if (initial) post('state', { target: msg.sender, state: initial });
+      }
+    } else if (msg.type === 'state') {
+      if (!msg.payload.target || msg.payload.target === state.currentUser.id) void applyRemote(msg.payload.state);
+    } else if (msg.type === 'chat') {
+      const message = msg.payload.message as ChatMessage | undefined;
+      if (message?.senderId === msg.sender && typeof message.text === 'string' && !state.chatMessages.some(m => m.id === message.id)) {
+        set({ chatMessages: [...state.chatMessages, message].slice(-CHAT_HISTORY_LIMIT) });
+      }
+    } else if (msg.type === 'leave') {
+      const peers = { ...state.peers };
+      delete peers[msg.sender];
+      set({ peers, hostId: hostOf(peers) });
+    }
+  };
+
+  const leave = () => {
+    if (channel) {
+      try { post('leave', {}); } catch { /* The document may already be closing. */ }
+      channel.close(); channel = null;
+    }
+    if (pending !== null) clearTimeout(pending);
+    pending = null; lastSent = undefined;
+    stopFollowing();
+    if (typeof window !== 'undefined') window.removeEventListener('pagehide', leave);
+    set({ id: '', hostId: '', peers: {}, chatMessages: [], connected: false, syncNotice: null });
+  };
+  const join = async (sessionId: string, name: string) => {
+    leave();
+    if (typeof BroadcastChannel === 'undefined') {
+      set({ syncNotice: 'This browser does not support local tab synchronization.' }); return;
+    }
+    channel = new BroadcastChannel('phage_explorer_collab');
+    channel.onmessage = receive;
+    const joinedAt = Date.now(), user = { ...get().currentUser, name, joinedAt, lastActive: joinedAt };
+    set({ id: sessionId, currentUser: user, peers: { [user.id]: user }, hostId: user.id, connected: true });
+    lastSent = JSON.stringify(snapshot());
+    joinedWithoutView = !explorer?.navigation.currentCatalogView();
+    if (typeof window !== 'undefined') window.addEventListener('pagehide', leave);
+    post('join', { user });
+    post('presence', { user });
+  };
+  return {
+    id: '', hostId: '', peers: {}, connected: false, chatMessages: [], syncNavigation: true, syncOverlays: false, syncNotice: null,
+    currentUser: { id: generateId(), name: 'Anonymous', color: generateColor(), lastActive: Date.now() },
+    attachExplorer: next => {
+      unsubscribe?.(); stopFollowing(); explorer = next;
+      unsubscribe = next.navigation.subscribe(explorerChanged);
+      explorerChanged();
+      return () => {
+        if (explorer === next) { explorer = null; unsubscribe?.(); unsubscribe = undefined; stopFollowing(); }
+      };
+    },
+    explorerChanged,
+    createSession: async name => { const id = generateId(); await join(id, name); return id; },
+    joinSession: join,
+    leaveSession: leave,
+    updatePresence: ({ name, color }) => {
+      const { currentUser, connected, peers } = get();
+      if (!connected) return;
+      const user = { ...currentUser, name: name ?? currentUser.name, color: color ?? currentUser.color, lastActive: Date.now() };
+      set({ currentUser: user, peers: { ...peers, [user.id]: user } });
+      post('presence', { user });
+    },
+    setSyncNavigation: enabled => { stopFollowing(); set({ syncNavigation: enabled }); explorerChanged(); },
+    setSyncOverlays: enabled => { stopFollowing(); set({ syncOverlays: enabled }); explorerChanged(); },
+    sendMessage: text => {
+      const { currentUser, connected, chatMessages } = get();
+      if (!connected || !text.trim()) return;
+      const message = { id: generateId(), senderId: currentUser.id, senderName: currentUser.name,
+        text: text.trim(), timestamp: Date.now() };
+      set({ chatMessages: [...chatMessages, message].slice(-CHAT_HISTORY_LIMIT) });
+      post('chat', { message });
+    },
+    dispose: leave,
+  };
 });
+
+export const useCollaborationStore = createCollaborationStore();

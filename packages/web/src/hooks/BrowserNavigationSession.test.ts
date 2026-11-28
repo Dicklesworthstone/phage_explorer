@@ -57,6 +57,45 @@ async function fixture(runtime: BrowserNavigationRuntime = {}, local = false) {
 }
 
 describe('ordinary browser navigation and portable named views', () => {
+  test('follows verified catalog views across reordered IDs and reuses the loaded source while scrolling', async () => {
+    const f = await fixture();
+    usePhageStore.setState({ viewMode: 'aa', readingFrame: -2, scrollPosition: 7, selectedGeneId: 7 });
+    const shared = f.session.currentCatalogView()!;
+    await f.select(1);
+    f.phages[0] = { ...f.phages[0], id: 23 };
+    usePhageStore.setState({ phages: [...f.phages] });
+    await f.select(1);
+    const signal = new AbortController().signal;
+    assert.ok(await f.session.followCatalogView(shared, signal));
+    assert.equal(f.selection.getSnapshot().selection?.phage.id, 23);
+    assert.equal(f.selection.getSnapshot().selection?.sequence, f.sequences[0]);
+    assert.deepEqual(f.session.currentCatalogView(), shared);
+    f.repository.getPhageByIndex = () => { throw new Error('Scrolling must reuse the verified source'); };
+    shared.view.scrollPosition = 12;
+    assert.ok(await f.session.followCatalogView(shared, signal));
+    assert.equal(usePhageStore.getState().scrollPosition, 12);
+    shared.view.geneId = 46;
+    assert.equal(await f.session.followCatalogView(shared, signal), false);
+    assert.equal(usePhageStore.getState().selectedGeneId, 7);
+  });
+
+  test('private views never leave the tab or yield to peers, and foreground navigation owns stalled peer reads', async () => {
+    const f = await fixture();
+    const saved = f.session.currentCatalogView()!;
+    await f.select(1);
+    const read = deferred<PhageFull | null>();
+    f.repository.getPhageByIndex = () => read.promise;
+    const following = f.session.followCatalogView(saved, new AbortController().signal);
+    usePhageStore.setState({ scrollPosition: 24 });
+    assert.equal(await following, false);
+    read.resolve(f.phages[0]); await tick();
+    assert.equal(f.selection.getSnapshot().selection?.index, 1);
+    assert.equal(usePhageStore.getState().scrollPosition, 24);
+    const local = await fixture({}, true);
+    assert.equal(local.session.currentCatalogView(), null);
+    assert.equal(await local.session.followCatalogView(saved, new AbortController().signal), false);
+    assert.equal(local.selection.getSnapshot().selection?.phage.localGenome?.contentId, local.phages[0].localGenome?.contentId);
+  });
   test('restores exact cross-genome AA/frame/gene views, undo/redo, and invalidates the forward branch on new navigation', async () => {
     const f = await fixture();
     usePhageStore.setState({ viewMode: 'aa', readingFrame: -2, scrollPosition: 17, selectedGeneId: 7 }); await tick();

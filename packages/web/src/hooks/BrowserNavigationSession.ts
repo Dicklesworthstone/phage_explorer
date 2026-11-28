@@ -244,10 +244,29 @@ export class BrowserNavigationSession {
     if (!entry) { this.fail(new Error('Choose an existing saved view.')); return false; }
     return this.restore({ source: entry.source, view: entry.view });
   };
-  private async restore(value: SavedView, historyIndex?: number): Promise<boolean> {
+  /** Only a complete public catalog view may leave this tab through live sync. */
+  currentCatalogView = (): SavedView | null => {
+    if (this.operation || this.active?.source.kind !== 'catalog') return null;
+    return this.capture();
+  };
+  followCatalogView = async (entry: SavedView, signal: AbortSignal): Promise<boolean> => {
+    const current = this.currentCatalogView();
+    if (!current || signal.aborted || entry?.source?.kind !== 'catalog') return false;
+    try { validateNamedSavedView({ ...entry, name: 'Shared catalog view' }); } catch { return false; }
+    if (!commandValuesEqual(current.source, entry.source)) return this.restore(entry, undefined, signal);
+    // Scrolling an already verified source should never re-read its entire sequence.
+    if (entry.view.geneId !== null && !this.active?.selection.phage.genes.some(gene => gene.id === entry.view.geneId)) return false;
+    if (!commandValuesEqual(current.view, entry.view)) {
+      usePhageStore.setState({ viewMode: entry.view.viewMode, readingFrame: entry.view.readingFrame,
+        scrollPosition: entry.view.scrollPosition, selectedGeneId: entry.view.geneId });
+    }
+    return true;
+  };
+  private async restore(value: SavedView, historyIndex?: number, signal?: AbortSignal): Promise<boolean> {
     this.cancel(); this.flush();
     const entry = structuredClone(value), origin = usePhageStore.getState(), snapshot = this.selection.getSnapshot();
     let op: Restore | null = null, timer: ReturnType<typeof setTimeout> | undefined;
+    const cancel = () => { if (op && this.operation === op) this.cancel('Stopped following the other tab.'); };
     try {
       validateNamedSavedView({ name: 'Restore', ...entry });
       if (!snapshot.repository) throw new Error('Load the catalog or a local genome workspace first.');
@@ -259,10 +278,14 @@ export class BrowserNavigationSession {
         : 'This view requires one matching catalog genome. Reload the original catalog before restoring.');
       op = { controller: new AbortController(), repository: snapshot.repository, phages: origin.phages, origin,
         originSelection: snapshot.selection, index: matches[0].index, accepted: null, source: null, entry, timedOut: false };
-      this.operation = op; this.publish({ busy: true, error: null, notice: 'Verifying the complete genome and saved annotations…' });
+      this.operation = op;
+      signal?.addEventListener('abort', cancel, { once: true });
+      if (signal?.aborted) { cancel(); return false; }
+      this.publish({ busy: true, error: null, notice: 'Verifying the complete genome and saved annotations…' });
       const owner = op;
       timer = setTimeout(() => { owner.timedOut = true; owner.controller.abort(); }, this.timeoutMs);
       const accepted = await this.selection.select(op.index, matches[0].phage.id, {
+        background: !!signal,
         signal: op.controller.signal,
         verify: async candidate => {
           const source = await this.sourceFor(candidate);
@@ -291,6 +314,6 @@ export class BrowserNavigationSession {
         this.queueCapture();
       }
       return false;
-    } finally { if (timer !== undefined) clearTimeout(timer); }
+    } finally { if (timer !== undefined) clearTimeout(timer); signal?.removeEventListener('abort', cancel); }
   }
 }

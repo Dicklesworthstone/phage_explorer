@@ -23,6 +23,7 @@ import { useDiffReferenceSequence } from './hooks/useDiffReferenceSequence';
 import { PhageSelectionSession } from './hooks/PhageSelectionSession';
 import { commitExplorerSelection } from './components/SelectedGeneLifecycleController';
 import { BrowserNavigationSession } from './hooks/BrowserNavigationSession';
+import { useCollaborationExplorer } from './hooks/useCollaboration';
 import { ShareStateController } from './components/ShareStateController';
 import type { SelectedCdsSource } from '@phage-explorer/core';
 import { SelectedGeneDock } from './components/mobile/SelectedGeneDock';
@@ -131,6 +132,7 @@ export default function App(): React.ReactElement {
   const selectionSnapshot = useSyncExternalStore(selectionSession.subscribe, selectionSession.getSnapshot, selectionSession.getSnapshot);
   const [navigationSession] = useState(() => new BrowserNavigationSession(selectionSession));
   useEffect(() => navigationSession.connect(), [navigationSession]);
+  useCollaborationExplorer(navigationSession);
   const [localWorkspaceRequested, setLocalWorkspaceRequested] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [catalogRetry, setCatalogRetry] = useState(0);
