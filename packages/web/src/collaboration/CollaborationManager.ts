@@ -137,9 +137,11 @@ export const createCollaborationStore = () => create<CollaborationStore>((set, g
       if (!peer || peer.id !== msg.sender || typeof peer.name !== 'string' || !Number.isFinite(peer.lastActive)) return;
       const peers = { ...state.peers, [peer.id]: peer }, hostId = hostOf(peers);
       set({ peers, hostId });
-      if (msg.type === 'join') {
-        post('presence', { user: get().currentUser });
-        const initial = hostId === state.currentUser.id ? snapshot() : null;
+      if (msg.type === 'join') post('presence', { user: get().currentUser });
+      // Simultaneous joins can elect this tab on the first presence response.
+      // The elected tab initializes each new peer, whichever message arrived first.
+      if (hostId === state.currentUser.id && (msg.type === 'join' || !state.peers[peer.id])) {
+        const initial = snapshot();
         if (initial) post('state', { target: msg.sender, state: initial });
       }
     } else if (msg.type === 'state') {

@@ -34,6 +34,22 @@ async function until(check: () => boolean): Promise<void> {
 }
 
 describe('Multi-Tab Sync & Collaboration Action (phage_explorer-9vk4.2)', () => {
+  it('initializes peers even when concurrent named joins elect the newer tab', async () => {
+    const a = endpoint('a'), b = endpoint('b');
+    const room = crypto.randomUUID(), when = Date.now;
+    try {
+      Date.now = () => 1234;
+      a.store.setState({ currentUser: { ...a.store.getState().currentUser, id: 'z' } });
+      b.store.setState({ currentUser: { ...b.store.getState().currentUser, id: 'a' } });
+      await a.store.getState().joinSession(room, 'first');
+      await b.store.getState().joinSession(room, 'second');
+    } finally { Date.now = when; }
+    try {
+      await until(() => a.view()?.source.accession === 'b');
+      expect(a.store.getState().hostId).toBe('a');
+      expect(b.store.getState().hostId).toBe('a');
+    } finally { a.store.getState().dispose(); b.store.getState().dispose(); }
+  });
   it('initializes a named-group joiner and synchronizes changes over actual BroadcastChannels without echoing or sharing private views', async () => {
     const a = endpoint('a'), b = endpoint('b'), other = endpoint('c');
     const id = crypto.randomUUID(), observer = new BroadcastChannel('phage_explorer_collab');
